@@ -26,7 +26,7 @@ jobs:
           - runner: windows-2022
             platform: win-x86_64
             sdk_sha256: 8be6c200d7b4bdaad2a116fbcc4d3c20107d76081e19a353ac54a3b77d854ef3
-          - runner: macos-14
+          - runner: macos-15
             platform: macos-aarch64
             sdk_sha256: f7bb0ac97692a5189d7c387887669036c59e6b56c5dad8e693ed5fa41d3d3def
     runs-on: ${{ matrix.runner }}
