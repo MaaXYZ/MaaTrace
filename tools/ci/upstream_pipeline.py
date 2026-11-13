@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Resolve/download the official MaaFramework test artifact, then run it unchanged.
 
-Only successful pushes to MaaXYZ/MaaFramework main's test.yml are accepted.
+Only successful pushes to MaaXYZ/MaaFramework main's test.yml containing the
+v5.16.1 Context plugin callback fix are accepted.
 Authentication is delegated to gh; no credentials are passed to PipelineTesting.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ import zipfile
 REPOSITORY = 'MaaXYZ/MaaFramework'
 WORKFLOW = '.github/workflows/test.yml'
 PLATFORMS = ('linux-x86_64', 'win-x86_64', 'macos-aarch64')
+MINIMUM_FRAMEWORK_REF = 'v5.16.1'
 
 
 def api(endpoint):
@@ -68,9 +70,16 @@ def available_artifacts(values):
     return selected
 
 
+def supports_plugin_callbacks(run):
+    comparison = api(f'compare/{MINIMUM_FRAMEWORK_REF}...{run["head_sha"]}')
+    return comparison.get('status') in ('ahead', 'identical')
+
+
 def resolve(run_id=None):
     if run_id:
         run = validate_run(api(f'actions/runs/{run_id}'))
+        if not supports_plugin_callbacks(run):
+            raise ValueError(f'Requested run predates {MINIMUM_FRAMEWORK_REF} native Context plugin callbacks')
         selected = available_artifacts(artifacts(run['id']))
         if len(selected) != len(PLATFORMS):
             raise ValueError('Requested run does not have all three unexpired full artifacts')
@@ -82,17 +91,18 @@ def resolve(run_id=None):
         for candidate in runs:
             run = validate_run(candidate)
             selected = available_artifacts(artifacts(run['id']))
-            if len(selected) == len(PLATFORMS):
+            if len(selected) == len(PLATFORMS) and supports_plugin_callbacks(run):
                 return run, selected
         if len(runs) < 20:
             break
-    raise ValueError('No successful main test run with all required non-expired artifacts was found')
+    raise ValueError(f'No successful main test run at or after {MINIMUM_FRAMEWORK_REF} with all required non-expired artifacts was found')
 
 
 def provenance(run, selected):
     return {
         'repository': REPOSITORY, 'workflow': WORKFLOW, 'run_id': run['id'],
         'run_attempt': run.get('run_attempt'), 'commit': run['head_sha'], 'url': run['html_url'],
+        'minimum_framework_ref': MINIMUM_FRAMEWORK_REF,
         'artifacts': {platform: {'id': value['id'], 'name': value['name'], 'digest': value.get('digest'),
                                  'size_in_bytes': value['size_in_bytes']}
                       for platform, value in selected.items()},

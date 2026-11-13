@@ -12,7 +12,7 @@ permissions:
 
 env:
   # Update the version and the three upstream checksums together.
-  MAA_SDK_VERSION: v5.16.0
+  MAA_SDK_VERSION: v5.16.1
 
 jobs:
   build:
@@ -22,13 +22,13 @@ jobs:
         include:
           - runner: ubuntu-22.04
             platform: linux-x86_64
-            sdk_sha256: dd730364541bc2c737f9049c27561cfb29a2905a7750e4dea1e68fa3926d2f05
+            sdk_sha256: 3b9fc1d979cf21dcb81768fdaf06a6e45aaa2c1058dd879d4b5417274fae919c
           - runner: windows-2022
             platform: win-x86_64
-            sdk_sha256: 8be6c200d7b4bdaad2a116fbcc4d3c20107d76081e19a353ac54a3b77d854ef3
+            sdk_sha256: 19588e6fda8d977496eb143cce157ce0c21890bee62aef8fdf1696930fe1286e
           - runner: macos-15
             platform: macos-aarch64
-            sdk_sha256: f7bb0ac97692a5189d7c387887669036c59e6b56c5dad8e693ed5fa41d3d3def
+            sdk_sha256: fee7eef4ce9aace7a875be47e10ee1b3600d927f3d983e1d1a782aca20cbbd3d
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_run_id:
-        description: 'Successful MaaFramework test.yml main push run ID; blank selects the latest with full artifacts'
+        description: 'Successful MaaFramework main test run at/after v5.16.1; blank selects the latest compatible run with full artifacts'
         required: false
         type: string
 

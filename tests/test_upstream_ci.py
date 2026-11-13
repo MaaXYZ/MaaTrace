@@ -47,6 +47,7 @@ class UpstreamTests(unittest.TestCase):
         stale = artifacts(); stale[0]['expired'] = True
         def api(path):
             if 'workflows/test.yml/runs?' in path: return {'workflow_runs': [new, old]}
+            if path.startswith('compare/'): return {'status': 'ahead'}
             return {'artifacts': stale if '/runs/11/' in path else artifacts()}
         with mock.patch.object(ci, 'api', side_effect=api):
             run, selected = ci.resolve()
@@ -55,8 +56,27 @@ class UpstreamTests(unittest.TestCase):
 
     def test_explicit_run_does_not_silently_fall_back(self):
         values = artifacts()[:-1]
-        with mock.patch.object(ci, 'api', side_effect=lambda path: {'artifacts': values} if '/artifacts?' in path else run_info(10)):
+        def api(path):
+            if path.startswith('compare/'): return {'status': 'identical'}
+            return {'artifacts': values} if '/artifacts?' in path else run_info(10)
+        with mock.patch.object(ci, 'api', side_effect=api):
             with self.assertRaises(ValueError): ci.resolve(10)
+
+    def test_only_runs_containing_the_context_callback_fix_are_selected(self):
+        for status in ('ahead', 'identical', 'behind', 'diverged'):
+            with self.subTest(status=status):
+                def api(path):
+                    if path.startswith('compare/'):
+                        self.assertEqual(path, f'compare/{ci.MINIMUM_FRAMEWORK_REF}...{run_info()["head_sha"]}')
+                        return {'status': status}
+                    if 'workflows/test.yml/runs?' in path: return {'workflow_runs': [run_info()]}
+                    return {'artifacts': artifacts()} if '/artifacts?' in path else run_info()
+                with mock.patch.object(ci, 'api', side_effect=api):
+                    for run_id in (None, 10):
+                        if status in ('ahead', 'identical'):
+                            self.assertEqual(ci.resolve(run_id)[0]['id'], 10)
+                        else:
+                            with self.assertRaises(ValueError): ci.resolve(run_id)
 
     def test_full_artifact_extract_and_stale_destination(self):
         with tempfile.TemporaryDirectory() as tmp:

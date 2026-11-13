@@ -48,7 +48,7 @@ class PipelineTraceTests(unittest.TestCase):
                        "size": len(config), "sha256": hashlib.sha256(config).hexdigest()}
         self.events = [
             event(1, "task.started", "task-1", source="tasker", data={
-                "enrichment": {"context_capture": {"attached": True, "method": "explicit_tasker_sink"}}}),
+                "enrichment": {"context_capture": {"method": "plugin_callback"}}}),
             event(2, "node.started", "node-1", data={"config": self.config}),
             event(3, "decision.started", "decision-1"),
             event(4, "recognition.started", "reco-1"),
@@ -116,6 +116,12 @@ class PipelineTraceTests(unittest.TestCase):
                 self.events[0]["data"]["enrichment"] = {"context_capture": attachment}
                 self.write()
                 self.assert_error("context_sink_missing")
+
+    def test_legacy_explicit_context_sink_remains_readable(self):
+        self.events[0]["data"]["enrichment"] = {
+            "context_capture": {"attached": True, "method": "explicit_tasker_sink"}}
+        self.write()
+        self.assertTrue(self.report()["valid"])
 
     def test_recording_gap_is_rejected_even_when_well_formed(self):
         self.events.append(event(12, "trace.gap", source="recorder", task=None, run=None,

@@ -1,6 +1,6 @@
 # MaaTrace
 
-MaaFramework 的可选运行记录插件。将动态库放进宿主的 `plugins` 目录，正常运行任务，即可得到可以校验、解析和导出的结构化运行记录。
+MaaFramework 的可选运行记录插件，需要宿主 **MaaFramework v5.16.1 或更新版本**。将动态库放进宿主的 `plugins` 目录，正常运行任务，即可得到可以校验、解析和导出的结构化运行记录。
 
 项目沿用 [MaaPluginDemo](https://github.com/MaaXYZ/MaaPluginDemo) 的 plugin ABI v1 和动态库部署方式，独立构建、独立发布。发行包包含插件、记录协议、Python 命令行工具和文档；运行时使用宿主已有的 MaaFramework。
 
@@ -140,9 +140,9 @@ MaaTraceRecordStopRequest(tasker, "user");
 
 ## 框架兼容与构建
 
-部分 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽。MaaTrace 不导出该可选入口，而在任务开始时通过 `MaaTaskerAddContextSink()` 注册内部回调、任务结束后移除，兼容修复前后的加载器并避免重复采集。运行期间清除宿主的 Context sinks 会中断节点采集。
+MaaTrace 需要 MaaFramework **v5.16.1 或更新版本**。该版本修复了 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽的问题。插件通过标准 `OnContextEvent` 入口自动采集节点事件，不再按任务手动添加或移除 Context sink。插件须在创建 Tasker 前加载；运行期间清除宿主的 Context sinks 会中断节点采集。
 
-需要 CMake 3.22+、C++17 编译器及匹配平台的 MaaFramework SDK；测试与命令行工具需要 Python 3.10+。CI 固定 SDK `v5.16.0` 并校验下载 SHA256。将 SDK 解压到 `deps` 后：
+需要 CMake 3.22+、C++17 编译器及匹配平台的 MaaFramework SDK；测试与命令行工具需要 Python 3.10+。CI 固定 SDK `v5.16.1` 并校验下载 SHA256。将 SDK 解压到 `deps` 后：
 
 ```sh
 cmake -S . -B build -DMAA_FRAMEWORK_ROOT="$PWD/deps" -DCMAKE_BUILD_TYPE=Release
@@ -160,9 +160,9 @@ cpack --config build/CPackConfig.cmake -C Release -B dist
 
 [Upstream pipeline integration](https://github.com/MaaXYZ/MaaTrace/actions/workflows/upstream-pipeline.yml) 直接下载 MaaFramework 官方 `test.yml` 成功 main push 的 `MAA-<platform>-full` 产物，保留其 SDK、`PipelineTesting` 和整套回放/模型资源。它用该 SDK 编译当前 MaaTrace，放入 `bin/plugins/` 后运行官方测试程序，不修改上游测试代码。
 
-该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次成功运行；留空则选择最新且产物未过期的成功运行。
+该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行，且上游提交必须包含 `v5.16.1` 的 Context 回调修复。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次兼容的成功运行；留空则选择最新且产物未过期的兼容成功运行。
 
-除了要求 `PipelineTesting` 正常退出，CI 还验证 JSONL 非空、任务/节点/候选/识别/动作事件齐全、Context 订阅成功、配置快照与 SHA256 正确、没有记录缺口或截断。官方测试中的预期失败和手动停止不视为记录器故障；Windows 的 manifest 可以仍为 `recording`。截图不是这条 CI 的必需条件，图片证据由独立测试覆盖。
+除了要求 `PipelineTesting` 正常退出，CI 还验证 JSONL 非空、任务/节点/候选/识别/动作事件齐全、Context 采集方式与配置快照及 SHA256 正确、没有记录缺口或截断。官方测试中的预期失败和手动停止不视为记录器故障；Windows 的 manifest 可以仍为 `recording`。截图不是这条 CI 的必需条件，图片证据由独立测试覆盖。
 
 每个平台上传 `MaaTrace-upstream-pipeline-<platform>` artifact，内含结构化记录、配置快照、运行日志、校验报告，以及上游 run ID、提交 SHA、artifact ID 和下载校验值，保留 14 天。测试失败时也会上传可用诊断数据。跨仓库 artifact 下载使用 Actions token；访问受限时下载步骤会明确失败，不会用其它测试代替。
 

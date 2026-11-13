@@ -349,80 +349,45 @@ void MAA_CALL context_event(void* handle, const char* message, const char* detai
     }
 }
 
-struct Subscriptions {
-    struct Subscription {
-        MaaSinkId sink = MaaInvalidId;
+struct Contexts {
+    struct TaskerContexts {
         std::map<std::pair<uintptr_t, MaaId>, std::string> contexts;
         uint64_t next_context = 0;
     };
     std::mutex mutex;
-    std::unordered_map<MaaTasker*, Subscription> sinks;
+    std::unordered_map<MaaTasker*, TaskerContexts> taskers;
 };
 
-Subscriptions& subscriptions()
+Contexts& contexts()
 {
-    // Process-lifetime storage avoids calling into MaaFramework at static teardown.
-    // Native plugin libraries are retained by PluginMgr for the process lifetime.
-    static auto* state = new Subscriptions;
+    // Plugin callbacks can still run during process teardown.
+    static auto* state = new Contexts;
     return *state;
 }
 
 std::string context_id(MaaTasker* tasker, void* handle, MaaId task_id)
 {
-    auto& state = subscriptions();
+    auto& state = contexts();
     std::lock_guard<std::mutex> lock(state.mutex);
-    const auto sub = state.sinks.find(tasker);
-    if (sub == state.sinks.end()) {
-        return "unavailable";
-    }
-    auto& subscription = sub->second;
+    auto& tasker_contexts = state.taskers[tasker];
     const auto key = std::make_pair(reinterpret_cast<uintptr_t>(handle), task_id);
-    const auto existing = subscription.contexts.find(key);
-    if (existing != subscription.contexts.end()) {
+    const auto existing = tasker_contexts.contexts.find(key);
+    if (existing != tasker_contexts.contexts.end()) {
         return existing->second;
     }
-    auto id = "context-" + std::to_string(++subscription.next_context);
-    subscription.contexts.emplace(key, id);
+    auto id = "context-" + std::to_string(++tasker_contexts.next_context);
+    tasker_contexts.contexts.emplace(key, id);
     return id;
 }
 
-bool attach_context(MaaTasker* tasker)
-{
-    if (!tasker) {
-        return false;
-    }
-    auto& state = subscriptions();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    auto [it, inserted] = state.sinks.try_emplace(tasker);
-    if (!inserted) {
-        return it->second.sink != MaaInvalidId;
-    }
-    const auto id = MaaTaskerAddContextSink(tasker, context_event, tasker);
-    if (id == MaaInvalidId) {
-        state.sinks.erase(it);
-        return false;
-    }
-    it->second.sink = id;
-    return true;
-}
-
-void detach_context(MaaTasker* tasker) noexcept
+void clear_contexts(MaaTasker* tasker) noexcept
 {
     try {
-        auto& state = subscriptions();
-        MaaSinkId id = MaaInvalidId;
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            const auto it = state.sinks.find(tasker);
-            if (it == state.sinks.end()) {
-                return;
-            }
-            id = it->second.sink;
-            state.sinks.erase(it);
-        }
-        MaaTaskerRemoveContextSink(tasker, id);
+        auto& state = contexts();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.taskers.erase(tasker);
     } catch (...) {
-        maa_trace::report_error("context_detach_failed");
+        maa_trace::report_error("context_cleanup_failed");
     }
 }
 
@@ -447,13 +412,10 @@ extern "C" MAA_TRACE_API void OnTaskerEvent(void* handle, const char* message, c
     try {
         Json extra = Json::object();
         if (event == "Tasker.Task.Starting") {
-            const bool attached = attach_context(tasker);
+            clear_contexts(tasker);
             const auto* version = MaaVersion();
             extra["framework_version"] = version ? version : "unknown";
-            extra["context_capture"] = {{"method", "explicit_tasker_sink"}, {"attached", attached}};
-            if (!attached) {
-                maa_trace::report_error("context_attach_failed");
-            }
+            extra["context_capture"] = {{"method", "plugin_callback"}};
         }
         maa_trace::record("tasker", owner, message, details_json, std::move(extra));
     } catch (...) {
@@ -461,7 +423,7 @@ extern "C" MAA_TRACE_API void OnTaskerEvent(void* handle, const char* message, c
         maa_trace::record("tasker", owner, message, details_json);
     }
     if (finished) {
-        detach_context(tasker);
+        clear_contexts(tasker);
         maa_trace::flush();
     }
 }
@@ -484,6 +446,7 @@ extern "C" MAA_TRACE_API void OnControllerEvent(void* handle, const char* messag
     }
 }
 
-// Deliberately do NOT export OnContextEvent. API-v1 loaders in affected MaaFW
-// versions assign that symbol to the controller slot. Explicit per-task context
-// registration works with both affected and corrected loaders, without duplicates.
+extern "C" MAA_TRACE_API void OnContextEvent(void* handle, const char* message, const char* details_json, void* trans_arg)
+{
+    context_event(handle, message, details_json, trans_arg);
+}

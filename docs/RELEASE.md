@@ -36,7 +36,7 @@ gh run list --workflow build.yml
 gh run watch TAG_RUN_ID --exit-status
 ```
 
-工作流当前配置 Windows x64、Linux x64、macOS ARM64，固定 MaaFramework `v5.16.0`。标签构建的版本取自标签去掉前缀 `v` 的值。普通分支也提供 Actions artifacts，方便在创建正式版本前验收。
+工作流当前配置 Windows x64、Linux x64、macOS ARM64，固定 MaaFramework `v5.16.1`，宿主最低版本同为 `v5.16.1`。标签构建的版本取自标签去掉前缀 `v` 的值。普通分支也提供 Actions artifacts，方便在创建正式版本前验收。
 
 不得把某一平台本地成功等同于其他平台已通过。目标提交和标签必须以各自的 Actions 结果为准。
 

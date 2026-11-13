@@ -150,8 +150,9 @@ class PipelineValidation:
                 seen_runs.add(run)
             if kind == "task.started":
                 self.report["tasks_started"] += 1
-                if _object(extra.get("context_capture")).get("attached") is not True:
-                    self.finding("error", "context_sink_missing", "task started without an attached MaaTrace Context sink", name, line)
+                capture = _object(extra.get("context_capture"))
+                if capture.get("method") != "plugin_callback" and capture.get("attached") is not True:
+                    self.finding("error", "context_sink_missing", "task has neither native plugin callbacks nor an attached legacy Context sink", name, line)
                 if _identifier(run) and _identifier(task):
                     if run in starts:
                         self.finding("error", "duplicate_run_start", f"run started more than once: {run}", name, line)

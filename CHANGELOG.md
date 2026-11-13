@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 使用标准 `OnContextEvent` 插件入口采集节点事件，移除逐任务手动订阅的绕过逻辑；宿主最低要求 MaaFramework v5.16.1。
+- CI SDK 升级到 v5.16.1，并限制上游流水线验收只使用包含 Context 回调修复的构建。
+
 ## 0.1.0
 
 首次交付版本：

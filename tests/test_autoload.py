@@ -54,10 +54,11 @@ def main():
         framework = args.framework.resolve()
         plugin = args.plugin.resolve()
         shutil.copy2(framework, stage/framework.name)
-        utilities = list(framework.parent.glob('*MaaUtils*'))
-        assert utilities, 'SDK is missing MaaUtils'
-        for path in utilities:
-            if path.is_file(): shutil.copy2(path, stage/path.name)
+        for component in ('MaaUtils', 'MaaCustomControlUnit'):
+            libraries = [p for p in framework.parent.glob('*' + component + '*') if p.is_file()]
+            assert libraries, f'SDK is missing {component}'
+            for path in libraries:
+                shutil.copy2(path, stage/path.name)
         shutil.copy2(plugin, stage/'plugins'/plugin.name)
         environment = dict(os.environ)
         key = 'PATH' if os.name == 'nt' else 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'

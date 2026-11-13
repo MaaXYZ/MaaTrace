@@ -29,6 +29,14 @@ CUSTOM_ACTION = C.CFUNCTYPE(BOOL, VOID, I64, C.c_char_p, C.c_char_p,
                             C.c_char_p, I64, VOID, VOID)
 
 
+class CustomControllerCallbacks(C.Structure):
+    _fields_ = [(name, VOID) for name in (
+        "connect connected request_uuid get_features start_app stop_app screencap "
+        "click swipe touch_down touch_move touch_up click_key input_text key_down "
+        "key_up scroll relative_move shell inactive get_info"
+    ).split()]
+
+
 def bind(lib, name, result, *args):
     fn = getattr(lib, name)
     fn.restype = result
@@ -55,7 +63,7 @@ class Libraries:
         self.plugin = C.CDLL(str(plugin))
         bind(self.plugin, "GetApiVersion", C.c_uint32)
         bind(self.plugin, "GetPluginVersion", C.c_char_p)
-        for name in ("OnTaskerEvent", "OnResourceEvent", "OnControllerEvent"):
+        for name in ("OnTaskerEvent", "OnResourceEvent", "OnControllerEvent", "OnContextEvent"):
             bind(self.plugin, name, None, VOID, C.c_char_p, C.c_char_p, VOID)
         bind(self.plugin, "MaaTraceFlush", C.c_int)
         bind(self.plugin, "MaaTraceShutdown", C.c_int)
@@ -124,13 +132,6 @@ def basic(libs, output):
     p, fw = libs.plugin, libs.fw
     assert p.GetApiVersion() == 1
     assert p.GetPluginVersion()
-    try:
-        getattr(p, "OnContextEvent")
-    except AttributeError:
-        pass
-    else:
-        raise AssertionError("OnContextEvent must stay hidden to avoid the old loader's callback overwrite")
-
     owners = [fw.MaaTaskerCreate(), fw.MaaTaskerCreate()]
     assert all(owners)
     ids = [18446744073709551615, "task-with-string-id"]
@@ -247,18 +248,16 @@ def integration(libs, output, plugin_path):
         resource_id = fw.MaaResourcePostBundle(resource, os.fsencode(root))
         assert resource_id and fw.MaaResourceWait(resource, resource_id) == SUCCESS
         assert fw.MaaTaskerBindResource(tasker, resource)
-        if not fw.MaaTaskerInited(tasker):
-            # Older SDKs require a connected controller even for DirectHit.
-            images = output.parent / "images"
-            images.mkdir()
-            write_png(images / "screen.png")
-            bind(fw, "MaaDbgControllerCreate", VOID, C.c_char_p)
-            bind(fw, "MaaControllerPostConnection", I64, VOID)
-            bind(fw, "MaaControllerWait", C.c_int32, VOID, I64)
-            controller = fw.MaaDbgControllerCreate(os.fsencode(images))
-            assert controller
-            assert fw.MaaControllerWait(controller, fw.MaaControllerPostConnection(controller)) == SUCCESS
-            assert fw.MaaTaskerBindController(tasker, controller)
+        callbacks = CustomControllerCallbacks()
+        connect = C.CFUNCTYPE(BOOL, VOID)(lambda _: False)
+        callbacks.connect = C.cast(connect, VOID)
+        bind(fw, "MaaCustomControllerCreate", VOID, C.POINTER(CustomControllerCallbacks), VOID)
+        bind(fw, "MaaControllerPostConnection", I64, VOID)
+        bind(fw, "MaaControllerWait", C.c_int32, VOID, I64)
+        controller = fw.MaaCustomControllerCreate(C.byref(callbacks), None)
+        assert controller
+        connection_id = fw.MaaControllerPostConnection(controller)
+        assert fw.MaaControllerWait(controller, connection_id) == 4000
         assert fw.MaaTaskerInited(tasker)
         assert fw.MaaResourceRegisterCustomAction(resource, b"nested", nested, None)
         top_ids = []
@@ -280,6 +279,12 @@ def integration(libs, output, plugin_path):
         assert len(nested_ids) == 1 and nested_ids[0]
         assert p.MaaTraceFlush() == 1
         events = read_events(output)
+        connection_events = [e for e in events if e["source"] == "controller"
+                             and str(native(e).get("ctrl_id")) == str(connection_id)]
+        assert [message(e) for e in connection_events] == [
+            "Controller.Action.Starting", "Controller.Action.Failed"
+        ], "controller callback was overwritten or recorded twice"
+        assert all(message(e).startswith("Node.") for e in events if e["source"] == "context"), "controller events reached the context callback"
         starts = [e for e in events if e["type"] == "task.started"]
         ordinary_starts = [e for e in starts if native(e).get("entry") != "MaaTaskerPostStop"]
         assert len(ordinary_starts) == 5, f"unexpected top-level starts: {ordinary_starts}"

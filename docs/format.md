@@ -125,7 +125,7 @@
 `data.enrichment` 可以包含：
 
 - `framework_version`：任务开始时查询的框架版本。
-- `context_capture`：Context sink 的安装方法及是否成功。
+- `context_capture`：Context 回调的采集方式。`method: "plugin_callback"` 表示由框架加载器注册标准插件入口；旧记录的 `method: "explicit_tasker_sink"` 与 `attached` 仍可读取。
 - `context_id`、`context_identity_source`：回调上下文的观察身份。
 - `effective_node`：开始通知时按原生名称查询的有效节点配置；标注 `source: "context_query_at_notification"`。
 - `recognition`、`action`、`node`：终态时可获取的详情；含 `availability`、`source`、`value`，或不可用原因。
