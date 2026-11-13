@@ -1,0 +1,126 @@
+name: Upstream pipeline integration
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - '.github/workflows/upstream-pipeline.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'include/**'
+      - 'third_party/**'
+      - 'tools/**'
+      - 'tests/test_pipeline_trace.py'
+      - 'tests/test_upstream_ci.py'
+  pull_request:
+    paths:
+      - '.github/workflows/upstream-pipeline.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'include/**'
+      - 'third_party/**'
+      - 'tools/**'
+      - 'tests/test_pipeline_trace.py'
+      - 'tests/test_upstream_ci.py'
+  workflow_dispatch:
+    inputs:
+      upstream_run_id:
+        description: 'Successful MaaFramework test.yml main push run ID; blank selects the latest with full artifacts'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: upstream-pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.upstream.outputs.run_id }}
+      commit: ${{ steps.upstream.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Select one upstream test run for every platform
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_RUN_ID: ${{ inputs.upstream_run_id || '' }}
+        run: |
+          python tools/ci/upstream_pipeline.py resolve \
+            --run-id "$UPSTREAM_RUN_ID" --output reports/upstream-selection.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-pipeline-selection
+          path: reports/upstream-selection.json
+          if-no-files-found: error
+          retention-days: 14
+
+  pipeline:
+    needs: resolve
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: windows-2025-vs2026
+            platform: win-x86_64
+          - runner: macos-15
+            platform: macos-aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download the official full test artifact
+        id: download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          UPSTREAM_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python tools/ci/upstream_pipeline.py download \
+            --run-id "$UPSTREAM_RUN_ID" --platform "$UPSTREAM_PLATFORM" \
+            --output upstream --metadata reports/upstream.json
+      - name: Build MaaTrace against the downloaded SDK
+        shell: bash
+        run: |
+          cmake -S . -B build-upstream -DMAA_FRAMEWORK_ROOT="$PWD/upstream" \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build-upstream --config Release --parallel 2
+          cmake --install build-upstream --config Release --prefix plugin-install
+      - name: Inject MaaTrace and run the official PipelineTesting executable
+        id: pipeline
+        shell: bash
+        run: |
+          python tools/ci/upstream_pipeline.py run --sdk upstream \
+            --plugin-dir plugin-install/plugins --trace-dir pipeline-traces \
+            --report-dir reports --timeout 600
+      - name: Validate generated structured traces
+        if: ${{ always() && steps.pipeline.outcome != 'skipped' && steps.pipeline.outcome != '' }}
+        shell: bash
+        run: |
+          python tools/ci/validate_pipeline_trace.py --trace-dir pipeline-traces \
+            --upstream-metadata reports/upstream.json --output reports/trace-validation.json
+      - name: Upload trace data and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MaaTrace-upstream-pipeline-${{ matrix.platform }}
+          path: |
+            reports/
+            pipeline-traces/
+            upstream/bin/debug/*.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -158,6 +158,14 @@ cpack --config build/CPackConfig.cmake -C Release -B dist
 
 ## 验证与发布
 
+[Upstream pipeline integration](https://github.com/MaaXYZ/MaaTrace/actions/workflows/upstream-pipeline.yml) 直接下载 MaaFramework 官方 `test.yml` 成功 main push 的 `MAA-<platform>-full` 产物，保留其 SDK、`PipelineTesting` 和整套回放/模型资源。它用该 SDK 编译当前 MaaTrace，放入 `bin/plugins/` 后运行官方测试程序，不修改上游测试代码。
+
+该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次成功运行；留空则选择最新且产物未过期的成功运行。
+
+除了要求 `PipelineTesting` 正常退出，CI 还验证 JSONL 非空、任务/节点/候选/识别/动作事件齐全、Context 订阅成功、配置快照与 SHA256 正确、没有记录缺口或截断。官方测试中的预期失败和手动停止不视为记录器故障；Windows 的 manifest 可以仍为 `recording`。截图不是这条 CI 的必需条件，图片证据由独立测试覆盖。
+
+每个平台上传 `MaaTrace-upstream-pipeline-<platform>` artifact，内含结构化记录、配置快照、运行日志、校验报告，以及上游 run ID、提交 SHA、artifact ID 和下载校验值，保留 14 天。测试失败时也会上传可用诊断数据。跨仓库 artifact 下载使用 Actions token；访问受限时下载步骤会明确失败，不会用其它测试代替。
+
 仓库包含真实 SDK 集成、图片缓存与预算、宿主接口、流程关联、SHA256 和命令行工具测试。CI 配置为 Windows x64、Linux x64、macOS ARM64；每个目标平台的支持状态以对应提交的实际 CI 结果为准。
 
 普通分支构建生成 Actions artifacts；推送 `v*` 标签后，工作流使用去掉 `v` 的版本号构建、打包、生成校验文件，并创建 **Draft Release**。正式发布前的复核步骤见 [发布说明](docs/RELEASE.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。发行包不重新打包 MaaFramework。

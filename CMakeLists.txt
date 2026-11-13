@@ -77,6 +77,10 @@ if(BUILD_TESTING)
             --plugin "$<TARGET_FILE:MaaTrace>" --framework "$<TARGET_FILE:maa_framework_sdk>")
     add_test(NAME trace_tools COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_tools.py)
+    add_test(NAME upstream_ci_tools COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_upstream_ci.py)
+    add_test(NAME pipeline_trace_validator COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_pipeline_trace.py)
     add_executable(test_flow tests/test_flow.cpp src/flow.cpp)
     target_compile_features(test_flow PRIVATE cxx_std_17)
     target_include_directories(test_flow PRIVATE src third_party)
