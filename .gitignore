@@ -1,0 +1,10 @@
+/build*/
+/install/
+/deps/
+/dist/
+/traces/
+/maa-traces/
+/CMakeUserPresets.json
+__pycache__/
+*.pyc
+.DS_Store

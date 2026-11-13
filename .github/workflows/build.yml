@@ -1,0 +1,107 @@
+name: Build and package
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Update the version and the three upstream checksums together.
+  MAA_SDK_VERSION: v5.16.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+            sdk_sha256: dd730364541bc2c737f9049c27561cfb29a2905a7750e4dea1e68fa3926d2f05
+          - runner: windows-2022
+            platform: win-x86_64
+            sdk_sha256: 8be6c200d7b4bdaad2a116fbcc4d3c20107d76081e19a353ac54a3b77d854ef3
+          - runner: macos-14
+            platform: macos-aarch64
+            sdk_sha256: f7bb0ac97692a5189d7c387887669036c59e6b56c5dad8e693ed5fa41d3d3def
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download pinned MaaFramework SDK
+        shell: bash
+        env:
+          SDK_PLATFORM: ${{ matrix.platform }}
+          SDK_SHA256: ${{ matrix.sdk_sha256 }}
+        run: |
+          python - <<'PY'
+          import hashlib, os, pathlib, urllib.request, zipfile
+          version = os.environ['MAA_SDK_VERSION']
+          name = f"MAA-{os.environ['SDK_PLATFORM']}-{version}.zip"
+          url = f"https://github.com/MaaXYZ/MaaFramework/releases/download/{version}/{name}"
+          archive = pathlib.Path('sdk.zip')
+          urllib.request.urlretrieve(url, archive)
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert actual == os.environ['SDK_SHA256'], f'SDK checksum mismatch: {actual}'
+          with zipfile.ZipFile(archive) as z:
+              z.extractall('deps')
+          archive.unlink()
+          PY
+      - name: Configure
+        shell: bash
+        env:
+          TRACE_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          version_arg=()
+          if [[ -n "$TRACE_RELEASE_TAG" ]]; then
+            version_arg=("-DMAA_TRACE_PACKAGE_VERSION=${TRACE_RELEASE_TAG#v}")
+          fi
+          cmake -S . -B build -DMAA_FRAMEWORK_ROOT="$PWD/deps" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON "${version_arg[@]}"
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+      - name: Test against the SDK
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Package
+        shell: bash
+        run: |
+          cpack --config build/CPackConfig.cmake -C Release -B dist
+          python - <<'PY'
+          import hashlib, pathlib
+          for p in pathlib.Path('dist').glob('*.zip'):
+              p.with_suffix('.zip.sha256').write_text(
+                  f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MaaTrace-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: MaaTrace-*
+          path: assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            assets/*.zip
+            assets/*.sha256

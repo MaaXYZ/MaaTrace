@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:maatrace:manifest:1.0",
+  "title": "MaaTrace manifest 1.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plugin_version",
+    "plugin_api_version",
+    "session_id",
+    "started_at",
+    "state",
+    "events",
+    "capabilities",
+    "limits",
+    "capture",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "plugin_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plugin_api_version": {
+      "const": 1
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "recording",
+        "closed",
+        "error",
+        "truncated"
+      ]
+    },
+    "events": {
+      "const": "events.jsonl"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "queue_capacity",
+        "queue_bytes",
+        "max_file_bytes",
+        "artifact_bytes",
+        "config_bytes"
+      ],
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "capture": {
+      "type": "object",
+      "properties": {
+        "images": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "privacy": {
+      "type": "string"
+    },
+    "recording_complete": {
+      "type": "boolean"
+    },
+    "open_runs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "accepted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "written": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dropped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "recording_errors": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "artifact_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "config_bytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true
+}

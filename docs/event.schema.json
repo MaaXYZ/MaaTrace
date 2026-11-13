@@ -1,0 +1,502 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:maatrace:event:1.0",
+  "title": "MaaTrace event 1.0",
+  "description": "One JSONL record. Native payloads and enrichment permit future optional fields.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "session_id",
+    "run_id",
+    "seq",
+    "timestamp",
+    "elapsed_us",
+    "type",
+    "source",
+    "task_id",
+    "span_id",
+    "parent_span_id",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "elapsed_us": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "span_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "parent_span_id": {
+      "$ref": "#/$defs/nullableId"
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "native_message": {
+          "type": "string"
+        },
+        "native_details": {
+          "type": "object"
+        },
+        "native_ids": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "native_status": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "enrichment": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "raw_details": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/fileReference"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifactReference"
+          }
+        },
+        "flow": {
+          "$ref": "#/$defs/flow"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "trace.gap"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "reason",
+              "first_seq",
+              "last_seq",
+              "count"
+            ],
+            "properties": {
+              "reason": {
+                "const": "queue_limit"
+              },
+              "first_seq": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "last_seq": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "trace.truncated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "reason",
+              "max_file_bytes"
+            ],
+            "properties": {
+              "reason": {
+                "const": "file_size_limit"
+              },
+              "max_file_bytes": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "trace.invalid_event"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "native_message",
+              "raw_details",
+              "enrichment",
+              "reason"
+            ],
+            "properties": {
+              "reason": {
+                "const": "details_must_be_json_object"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "not": {
+              "const": "recorder"
+            }
+          },
+          "type": {
+            "not": {
+              "const": "trace.invalid_event"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "native_message",
+              "native_details",
+              "native_ids",
+              "enrichment"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "nullableId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "fileReference": {
+      "type": "object",
+      "required": [
+        "availability"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "omitted"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Portable relative path under the session, checked by the CLI."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "available"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "path",
+              "sha256",
+              "size"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "omitted"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "artifactReference": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/fileReference"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "mime_type",
+            "metadata"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "metadata": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "flow": {
+      "type": "object",
+      "required": [
+        "provenance",
+        "context_id",
+        "evidence_seqs"
+      ],
+      "properties": {
+        "provenance": {
+          "enum": [
+            "observed",
+            "inferred"
+          ]
+        },
+        "context_id": {
+          "type": "string"
+        },
+        "evidence_seqs": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "parent_source": {
+          "type": "string"
+        },
+        "association_reset": {
+          "type": "string"
+        },
+        "source_node_name": {
+          "type": "string"
+        },
+        "executed_node_name": {
+          "type": "string"
+        },
+        "node_span_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "decision_span_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "selected_recognition_span_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "action_span_id": {
+          "$ref": "#/$defs/nullableId"
+        },
+        "candidate_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "selected_candidate_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_resolution": {
+          "type": "string"
+        },
+        "selection_source": {
+          "type": "string"
+        },
+        "result_source": {
+          "type": "string"
+        },
+        "jump_back": {
+          "type": "boolean"
+        },
+        "candidates": {
+          "type": "array"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "recognition_span_id",
+              "node_name",
+              "start_seq",
+              "finish_seq",
+              "candidate_index",
+              "outcome"
+            ],
+            "properties": {
+              "recognition_span_id": {
+                "type": "string"
+              },
+              "node_name": {
+                "type": "string"
+              },
+              "start_seq": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "finish_seq": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "candidate_index": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "transition": {
+          "type": "object",
+          "required": [
+            "from_node_name",
+            "from_span_id",
+            "to_node_name",
+            "to_span_id",
+            "provenance",
+            "reason",
+            "evidence_seqs"
+          ],
+          "properties": {
+            "from_node_name": {
+              "type": "string"
+            },
+            "to_node_name": {
+              "type": "string"
+            },
+            "from_span_id": {
+              "$ref": "#/$defs/nullableId"
+            },
+            "to_span_id": {
+              "$ref": "#/$defs/nullableId"
+            },
+            "provenance": {
+              "const": "inferred"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "evidence_seqs": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "source_instance_resolution": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
