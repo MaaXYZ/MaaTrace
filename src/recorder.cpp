@@ -260,10 +260,11 @@ private:
         };
         auto found = kinds->find(prefix);
         if (found != kinds->end()) kind = found->second;
+        const bool node_cancelled = found != kinds->end() && prefix.rfind("Node.", 0) == 0 && status == "Cancelled";
         std::string type = "framework.event";
         if (found != kinds->end()) {
             if (status == "Starting") type = kind + ".started";
-            if (status == "Succeeded" || status == "Failed") type = kind + ".finished";
+            if (status == "Succeeded" || status == "Failed" || node_cancelled) type = kind + ".finished";
         }
         if (item.source == "custom") type = "custom.event";
         if (item.source == "host" && item.message == "Host.Stop.Requested") type = "stop.requested";
@@ -294,10 +295,13 @@ private:
                 auto id = id_of(native, id_key);
                 if (!id.empty()) event["span_id"] = event["run_id"].get<std::string>() + ":" + kind + ":" + id;
             }
-            if (status == "Succeeded" || status == "Failed") {
+            if (status == "Succeeded" || status == "Failed" || node_cancelled) {
                 data["native_status"] = status;
+                // Legacy task status may report success for a cooperatively stopped task.
+                const bool cancelled = node_cancelled || (found != kinds->end()
+                    && native.contains("reason") && native["reason"] == "cancelled");
                 // Failed recognition can mean a miss or an execution error. Do not guess.
-                data["outcome"] = kind == "recognition"
+                data["outcome"] = cancelled ? "cancelled" : kind == "recognition"
                     ? (status == "Succeeded" ? "matched" : "unknown")
                     : (status == "Succeeded" ? "succeeded" : "failed");
             }

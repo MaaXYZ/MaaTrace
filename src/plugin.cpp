@@ -154,7 +154,7 @@ bool terminal(std::string_view message)
         return false;
     }
     const auto suffix = message.substr(pos + 1);
-    return suffix == "Succeeded" || suffix == "Failed";
+    return suffix == "Succeeded" || suffix == "Failed" || suffix == "Cancelled";
 }
 
 bool starts_with(std::string_view value, std::string_view prefix)

@@ -31,7 +31,7 @@ struct Trace {
         Json data = {{"native_details", native}, {"enrichment", enrichment}};
         if (!native_status.empty()) {
             data["native_status"] = native_status;
-            data["outcome"] = type == "recognition.finished" ? (native_status == "Succeeded" ? "matched" : "unknown")
+            data["outcome"] = native_status == "Cancelled" || native.value("reason", "") == "cancelled" ? "cancelled" : type == "recognition.finished" ? (native_status == "Succeeded" ? "matched" : "unknown")
                 : (native_status == "Succeeded" ? "succeeded" : "failed");
         }
         Json event = {{"seq", ++seq}, {"type", type}, {"source", task_event ? "tasker" : "context"},
@@ -215,6 +215,30 @@ void list_origin_and_overlap()
     check(third_start["span_id"].is_null(), "pairing stays disabled until enclosing node ends");
 }
 
+void cancelled_operations_do_not_infer_success()
+{
+    Trace t;
+    t.start();
+    t.begin_node(101, "A");
+    const Json list = Json::array({{{"name", "B"}}});
+    const auto started = t.start_decision("A", list);
+    t.reco(501, "B", true);
+    const auto end = t.emit("decision.finished", {{"name", "A"}, {"list", list}, {"reason", "cancelled"}});
+    check(end["span_id"] == started["span_id"], "cancelled decision closes the observed span");
+    check(flow(end)["selected_recognition_span_id"].is_null(), "cancelled decision cannot infer selection from a hit");
+    const auto node = t.emit("node.finished", {{"name", "A"}, {"node_id", 101}, {"_status", "Cancelled"},
+        {"node_details", {{"name", "B"}, {"reco_id", 501}, {"action_id", 601}}}}, t.span("node", 101));
+    check(!flow(node).contains("transition"), "cancelled node cannot infer a completed transition");
+
+    t.begin_node(102, "A");
+    t.start_decision("A", list);
+    t.emit("recognition.started", {{"name", "B"}}, t.span("recognition", 502));
+    t.emit("recognition.finished", {{"name", "B"}, {"_status", "Cancelled"}}, t.span("recognition", 502));
+    const auto cancelled = t.emit("decision.finished", {{"name", "A"}, {"list", list}, {"_status", "Cancelled"}});
+    check(flow(cancelled)["attempts"][0]["outcome"] == "cancelled", "cancelled recognition keeps its explicit outcome");
+    check(flow(cancelled)["selected_recognition_span_id"].is_null(), "cancelled recognition is never a match");
+}
+
 void loop_identity_and_task_cleanup()
 {
     Trace t;
@@ -243,6 +267,7 @@ int main()
         nested_scopes_and_waits();
         gaps_and_missing_information();
         loop_identity_and_task_cleanup();
+        cancelled_operations_do_not_infer_success();
         list_origin_and_overlap();
         std::cout << "PASS flow associations (7 scenarios)\n";
         return 0;

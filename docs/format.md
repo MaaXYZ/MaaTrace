@@ -33,7 +33,7 @@
 
 ## 事件映射与结果
 
-已知前缀的 `.Starting` 映射为 `.started`；`.Succeeded`、`.Failed` 映射为 `.finished`。
+已知前缀的 `.Starting` 映射为 `.started`；`.Succeeded`、`.Failed` 映射为 `.finished`；下表已知 `Node.*` 前缀的 `.Cancelled` 同样映射为 `.finished`。
 
 | 原生前缀 | 输出 kind |
 | --- | --- |
@@ -65,7 +65,7 @@
 
 `native_details` 保留原始数字类型，跨语言无损处理 ID 应优先使用 `native_ids` 字符串。未知原生字段不删除。
 
-原生识别 `Succeeded` 映射为 `matched`，`Failed` 映射为 `unknown`；其他对象分别映射 `succeeded` 和 `failed`。这些值不是超时、用户取消或业务目标达成的推断。动作接口成功不证明界面已经进入目标状态。
+原生识别 `Succeeded` 映射为 `matched`，`Failed` 映射为 `unknown`；其他对象分别映射 `succeeded` 和 `failed`。原生 `Node.*.Cancelled` 或已知终态事件明确携带 `reason: "cancelled"` 时，`outcome` 为 `cancelled`，`native_status` 仍保留原始后缀。因此旧式 `Tasker.Task.Succeeded` 配合取消原因会得到 `native_status: "Succeeded"` 和 `outcome: "cancelled"`。没有明确取消证据时不会推断用户取消，宿主停止请求本身不会改变结果。动作接口成功不证明界面已经进入目标状态。
 
 `node.started`/`node.finished` 保留原生通知时机：Pipeline 开始名称可能为来源节点，结束 `node_details.name` 才是实际选中节点。候选识别未命中不等于候选节点执行失败。不同框架版本的停止通知可能不同，插件保留收到的通知，不补造缺失终态。
 

@@ -66,7 +66,7 @@ python tools/maatrace.py export maa-traces/session-xxxx -o issue-trace.zip
 - 可选的当次识别输入图；宿主主动补充的业务事件与停止请求。
 - 队列丢失、文件截断、附件省略和记录器健康状态。
 
-PipelineNode 的开始名称可能是来源节点，结束详情才表示选中的节点。未命中候选不等于执行节点失败；未闭合节点也不能直接判定失败。当前原生识别 `Failed` 映射为 `outcome: "unknown"`，因为它不总能区分未命中、执行错误和停止。
+PipelineNode 的开始名称可能是来源节点，结束详情才表示选中的节点。未命中候选不等于执行节点失败；未闭合节点也不能直接判定失败。当前原生识别 `Failed` 默认映射为 `outcome: "unknown"`，因为它不总能区分未命中和执行错误。已知节点的 `Cancelled` 通知及终态明确给出的 `reason: "cancelled"` 映射为取消，并保留原始状态。
 
 原生协议没有提供的因果关系不会被补造：当前不能保证完整调用树、全部回跳来源或框架原生流转原因。详情见 [记录协议](docs/format.md)、[事件 Schema](docs/event.schema.json) 和 [Manifest Schema](docs/manifest.schema.json)。
 

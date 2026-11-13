@@ -137,6 +137,23 @@ def basic(libs, output):
     try:
         for owner, task in zip(owners, ids):
             libs.emit("Tasker", owner, "Tasker.Task.Starting", {"task_id": task, "entry": "synthetic"})
+        cancelled_cases = {
+            "Node.PipelineNode": ("node", "node_id"),
+            "Node.RecognitionNode": ("recognition_node", "node_id"),
+            "Node.ActionNode": ("action_node", "node_id"),
+            "Node.Recognition": ("recognition", "reco_id"),
+            "Node.Action": ("action", "action_id"),
+            "Node.NextList": ("decision", "list_id"),
+            "Node.WaitFreezes": ("wait", "wf_id"),
+        }
+        # The recorder normalizer is shared by every callback; inject node payloads
+        # through an exported callback without inventing an SDK-specific Context.
+        for index, (prefix, (_, key)) in enumerate(cancelled_cases.items(), 1):
+            details = {"task_id": ids[0], key: index, "name": "synthetic"}
+            libs.emit("Tasker", owners[0], prefix + ".Starting", details)
+            libs.emit("Tasker", owners[0], prefix + ".Cancelled", details)
+        libs.emit("Tasker", owners[0], "Node.FutureOperation.Cancelled", {"reason": "cancelled"})
+        libs.emit("Tasker", owners[0], "Node.Recognition.FuturePhase", {"reason": "cancelled"})
         # An unknown future framework event must survive schema normalization.
         for owner, task in zip(owners, ids):
             libs.emit("Tasker", owner, "Tasker.Future.Event", {
@@ -159,12 +176,27 @@ def basic(libs, output):
             libs.emit("Tasker", owner, "Tasker.Task.Succeeded", {"task_id": task, "entry": "synthetic"})
         # A later task on the same Tasker must get a distinct run, even if its ID repeats.
         libs.emit("Tasker", owners[0], "Tasker.Task.Starting", {"task_id": ids[0], "entry": "again"})
-        libs.emit("Tasker", owners[0], "Tasker.Task.Succeeded", {"task_id": ids[0], "entry": "again"})
+        libs.emit("Tasker", owners[0], "Tasker.Task.Succeeded", {"task_id": ids[0], "entry": "again", "reason": "cancelled"})
         assert p.MaaTraceFlush() == 1
         events = read_events(output)
         starts = [e for e in events if e["type"] == "task.started"]
         assert len(starts) == 3
         assert len({e["run_id"] for e in starts}) == 3
+        for prefix, (kind, key) in cancelled_cases.items():
+            end = next(e for e in events if message(e) == prefix + ".Cancelled")
+            start = next(e for e in events if message(e) == prefix + ".Starting")
+            assert end["type"] == kind + ".finished"
+            assert end["data"]["native_status"] == "Cancelled"
+            assert end["data"]["outcome"] == "cancelled"
+            if key != "list_id":
+                assert end["span_id"] == start["span_id"] and end["span_id"]
+        for msg in ("Node.FutureOperation.Cancelled", "Node.Recognition.FuturePhase"):
+            unknown = next(e for e in events if message(e) == msg)
+            assert unknown["type"] == "framework.event" and "outcome" not in unknown["data"]
+        legacy_cancelled = next(e for e in events if message(e) == "Tasker.Task.Succeeded" and native(e).get("entry") == "again")
+        assert legacy_cancelled["data"]["native_status"] == "Succeeded"
+        assert legacy_cancelled["data"]["outcome"] == "cancelled"
+
         assert starts[0]["task_id"] == str(ids[0]), "64-bit task ID lost precision"
         future = [e for e in events if message(e) == "Tasker.Future.Event"]
         assert len(future) == 2

@@ -312,7 +312,7 @@ void FlowTracker::enrich(Json& event)
         }
         flow["selected_recognition_span_id"] = nullptr;
         flow["selected_candidate_index"] = nullptr;
-        if (text(data, "native_status") == "Succeeded" && !decision.ambiguous && matches.size() == 1) {
+        if (text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled" && !decision.ambiguous && matches.size() == 1) {
             const auto& hit = *matches.front();
             flow["selected_recognition_span_id"] = hit.operation.span;
             if (hit.candidate) flow["selected_candidate_index"] = *hit.candidate;
@@ -322,7 +322,7 @@ void FlowTracker::enrich(Json& event)
             scope.selection = Selection{decision.operation.span, hit.operation.span, hit.operation.name, hit.candidate, seq};
         } else {
             scope.selection.reset();
-            if (text(data, "native_status") == "Succeeded") flow["selection_source"] = "unavailable";
+            if (text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled") flow["selection_source"] = "unavailable";
         }
     } else if (type == "recognition.started") {
         if (span.empty()) return;
@@ -408,7 +408,7 @@ void FlowTracker::enrich(Json& event)
         // operations where native predecessor and previous executed name agree.
         // In particular, jump-back may restore a different predecessor: keep it
         // unresolved instead of attaching to the immediately preceding execution.
-        if (paired && scope.node_kind == "node" && !selected_name.empty() && !reco.empty()) {
+        if (paired && scope.node_kind == "node" && text(data, "outcome") != "cancelled" && !selected_name.empty() && !reco.empty()) {
             Json edge = {{"to_span_id", span}, {"to_node_name", selected_name},
                 {"from_node_name", scope.node.name}, {"from_span_id", nullptr},
                 {"provenance", "inferred"}, {"reason", "selected_node_observed"},

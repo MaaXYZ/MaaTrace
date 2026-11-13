@@ -130,8 +130,21 @@ class PipelineTraceTests(unittest.TestCase):
         self.write([*self.events, extra])
         self.assert_error("task_identity_mismatch")
 
-    def test_unknown_cancelled_node_event_in_a_run_is_preserved(self):
-        # Current recorders preserve new native terminal phases as framework.event.
+    def test_explicit_cancellation_closes_node_span(self):
+        self.events.insert(-1, event(11, "node.finished", "interrupted-node", data={
+            "native_message": "Node.PipelineNode.Cancelled", "native_status": "Cancelled", "outcome": "cancelled",
+        }))
+        self.events[-1]["seq"], self.events[-1]["elapsed_us"] = 12, 1200
+        task = next(item for item in self.events if item["type"] == "task.finished")
+        task["data"].update({"native_message": "Tasker.Task.Succeeded", "native_status": "Succeeded", "outcome": "cancelled"})
+        task["data"]["native_details"]["reason"] = "cancelled"
+        self.write()
+        report = self.report()
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["unclosed_spans"], 0)
+
+    def test_legacy_recorder_cancelled_node_event_in_a_run_is_preserved(self):
+        # Records from older MaaTrace versions remain readable.
         cancelled = event(11, "framework.event", "interrupted-node", data={
             "native_message": "Node.PipelineNode.Cancelled",
             "native_details": {"task_id": 1, "node_id": 2, "reason": "cancelled"},
