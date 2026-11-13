@@ -84,7 +84,12 @@ def _locate(value: Path) -> tuple[Path, Path]:
         root = path.resolve()
         events = _safe_path(root, "events.jsonl")
     elif path.is_file():
-        root, events = path.parent.resolve(), path
+        # Resolve the file and its parent together. On Windows, resolving only
+        # the parent expands an 8.3 alias (RUNNER~1) while leaving the event path
+        # under the alias, so later relative_to(root) fails. The unresolved final
+        # path was checked for symlinks above before any canonicalization.
+        events = path.resolve()
+        root = events.parent
     else:
         raise TraceError(f"session or event file not found: {value}")
     if not events.is_file():

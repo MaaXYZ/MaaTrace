@@ -47,7 +47,10 @@ class Libraries:
         bind(self.fw, "MaaGlobalSetOption", BOOL, C.c_int32, VOID, C.c_uint64)
         off = C.c_int32(0)
         self.fw.MaaGlobalSetOption(4, C.byref(off), C.sizeof(off))
-        log_path = os.fsencode(Path(os.environ["MAA_TRACE_DIR"]).parent / "framework-log")
+        # MaaFramework keeps its logger open until process teardown. Windows
+        # cannot remove that file while cleaning the per-scenario temp directory.
+        log_root = Path(os.environ.get("MAA_TRACE_TEST_LOG_ROOT", tempfile.gettempdir()))
+        log_path = os.fsencode(log_root / "maatrace-sdk-logs" / str(os.getpid()))
         self.fw.MaaGlobalSetOption(1, C.c_char_p(log_path), len(log_path))
         self.plugin = C.CDLL(str(plugin))
         bind(self.plugin, "GetApiVersion", C.c_uint32)

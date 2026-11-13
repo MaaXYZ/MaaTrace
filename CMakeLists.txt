@@ -85,7 +85,8 @@ if(BUILD_TESTING)
     target_compile_features(test_sha256 PRIVATE cxx_std_17)
     target_include_directories(test_sha256 PRIVATE src)
     add_test(NAME sha256_vectors COMMAND test_sha256)
-    set_tests_properties(plugin_integration evidence_integration host_api drop_in_autoload PROPERTIES TIMEOUT 120)
+    set_tests_properties(plugin_integration evidence_integration host_api drop_in_autoload PROPERTIES
+        TIMEOUT 120 ENVIRONMENT "MAA_TRACE_TEST_LOG_ROOT=${CMAKE_BINARY_DIR}")
     if(WIN32)
         set_tests_properties(plugin_integration evidence_integration host_api PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:maa_framework_sdk>")

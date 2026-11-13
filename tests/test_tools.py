@@ -100,6 +100,29 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(summary["runs"][0]["run_id"], "run-1")
         self.assertIn("Start", json.dumps(summary))
 
+    def test_single_file_alias_normalizes_source_and_root_together(self):
+        # A parent-directory alias reproduces the same mixed canonical/source
+        # path bug as Windows short (8.3) paths, without requiring an NTFS volume.
+        alias = self.root / "session-alias"
+        try:
+            alias.symlink_to(self.session, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory alias creation unavailable on this host")
+        selected = alias / "events.jsonl"
+        report = self.call("validate", selected)
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["event_count"], 2)
+        output = self.root / "aliased-file.zip"
+        self.call("export", selected, "-o", output)
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read("events.jsonl"), (self.session / "events.jsonl").read_bytes())
+
+        # Canonicalizing parents must not bypass the ban on selecting a linked
+        # event file itself.
+        linked_event = self.root / "linked-events.jsonl"
+        linked_event.symlink_to(self.session / "events.jsonl")
+        self.call("validate", linked_event, expected=2, json_output=False)
+
     def test_utf8_output_under_ascii_environment(self):
         start, finish = task_events()
         start["data"]["native_details"]["entry"] = "领取奖励"
