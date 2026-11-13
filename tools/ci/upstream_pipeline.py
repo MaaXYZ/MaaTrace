@@ -27,9 +27,12 @@ PLATFORMS = ('linux-x86_64', 'win-x86_64', 'macos-aarch64')
 
 def api(endpoint):
     result = subprocess.run(['gh', 'api', f'repos/{REPOSITORY}/{endpoint}'],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise RuntimeError('Cannot read upstream Actions metadata. A token with access to the public upstream Actions artifacts may be required.\n' + result.stderr.strip())
+        raise RuntimeError('Cannot read upstream Actions metadata. A token with access to the public upstream Actions artifacts may be required.\n'
+                           + result.stderr.decode('utf-8', errors='replace').strip())
+    # GitHub JSON is UTF-8. Passing bytes to json.loads avoids Windows ACP
+    # decoding of non-ASCII commit messages inside subprocess reader threads.
     return json.loads(result.stdout)
 
 
