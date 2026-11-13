@@ -78,6 +78,20 @@ jobs:
               p.with_suffix('.zip.sha256').write_text(
                   f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n', encoding='utf-8')
           PY
+      - name: Test the packaged plugin
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys, zipfile
+          archive, = pathlib.Path('dist').glob('*.zip')
+          with zipfile.ZipFile(archive) as z:
+              z.extractall('packaged')
+          suffix = '.dll' if sys.platform == 'win32' else '.dylib' if sys.platform == 'darwin' else '.so'
+          plugin, = pathlib.Path('packaged/plugins').glob('*' + suffix)
+          framework, = pathlib.Path('deps/bin').glob('*MaaFramework' + suffix)
+          subprocess.run([sys.executable, 'tests/test_autoload.py', '--plugin', str(plugin),
+                          '--framework', str(framework)], check=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: MaaTrace-${{ matrix.platform }}
