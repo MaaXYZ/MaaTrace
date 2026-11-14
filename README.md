@@ -50,7 +50,7 @@ python tools/maatrace.py validate maa-traces/session-xxxx
 python tools/maatrace.py export maa-traces/session-xxxx -o issue-trace.zip
 ```
 
-也可传入 `events.jsonl` 路径，三个命令均支持 `--json`。`inspect` 展示任务、观察到的动作顺序、候选选择和缺口；`validate` 检查事件结构、顺序、附件路径、长度和 SHA256；`export` 保存原始文件并生成含逐文件校验和的 `export.json`。
+也可传入 `events.jsonl` 路径，三个命令均支持 `--json`。`inspect` 展示任务、父子操作与嵌套任务、观察到的动作顺序、候选选择、节点流转原因、资源加载错误和缺口；`validate` 检查事件结构、顺序、附件路径、长度和 SHA256；`export` 保存原始文件并生成含逐文件校验和的 `export.json`。
 
 应在任务停止并刷新记录后导出。工具会拒绝导出过程中变化的文件、符号链接或越界路径。默认不覆盖已有 ZIP，可显式传 `--overwrite`。损坏或不完整的记录仍可导出用于排查，导出结果中会保留校验结论。
 
@@ -62,13 +62,13 @@ python tools/maatrace.py export maa-traces/session-xxxx -o issue-trace.zip
 - 原生操作 ID、开始/结束关联、UTC 时间、单调时钟偏移和采集序号。
 - 可用的识别、动作及节点详情，以及当时查询到的有效节点配置快照。
 - 同一上下文内的候选轮次、尝试顺序、识别归属和选中结果；关联中包含证据事件序号。
-- 根据原生结果能够推导的节点流转。推导关系标记为 `inferred`，不能确定的关系留空。
+- 框架提供的父操作、嵌套任务和节点流转；缺少原生字段的旧宿主使用 `inferred` 关系，不能确定的关系留空。
 - 可选的当次识别输入图；宿主主动补充的业务事件与停止请求。
 - 队列丢失、文件截断、附件省略和记录器健康状态。
 
-PipelineNode 的开始名称可能是来源节点，结束详情才表示选中的节点。未命中候选不等于执行节点失败；未闭合节点也不能直接判定失败。当前原生识别 `Failed` 映射为 `outcome: "unknown"`，因为它不总能区分未命中、执行错误和停止。
+PipelineNode 的开始名称可能是来源节点，结束详情才表示选中的节点。未命中候选不等于执行节点失败；未闭合节点也不能直接判定失败。当前原生识别 `Failed` 默认映射为 `outcome: "unknown"`，因为它不总能区分未命中和执行错误。已知节点的 `Cancelled` 通知及终态明确给出的 `reason: "cancelled"` 映射为取消，并保留原始状态。
 
-原生协议没有提供的因果关系不会被补造：当前不能保证完整调用树、全部回跳来源或框架原生流转原因。详情见 [记录协议](docs/format.md)、[事件 Schema](docs/event.schema.json) 和 [Manifest Schema](docs/manifest.schema.json)。
+MaaFramework #1622 引入的运行时观测字段会直接用于关联父子操作、候选扫描与选中项，并记录 `entry`、`next`、`on_error`、`jump_back` 流转原因。嵌套任务沿用顶层 run，拥有独立的 task span；回跳恢复已有节点的后继列表，不表示再次执行其动作。原生关系使用 `observed`，旧版推断保留 `inferred`。缺口和未提供的内部调用仍不能据此补成完整调用树。详情见 [记录协议](docs/format.md)、[事件 Schema](docs/event.schema.json) 和 [Manifest Schema](docs/manifest.schema.json)。
 
 ## 配置
 
@@ -88,7 +88,9 @@ PipelineNode 的开始名称可能是来源节点，结束详情才表示选中�
 
 容量参数必须为正整数。`failed` 指原生识别 `Failed` 事件，**包括正常候选未命中**，不表示只保存最终失败任务的画面。
 
-图片来自框架保留的当次识别输入缓存，需要宿主启用 MaaFramework debug 模式并保留相应缓存。插件不会修改宿主的 debug 设置，也不会在失败后重新截图。缓存不可用、超过单图上限或附件预算时，记录中会说明原因。
+图片来自框架保留的当次识别输入缓存。旧版需要宿主启用 MaaFramework debug 模式；支持 #1622 的宿主也可以只设置全局 `RecoImageRaw=true`，通过 `RecoImageCacheBytes` / `RecoImageCacheLimit` 限制各 Tasker 的缓存。插件不会修改这些全局选项，也不会在失败后重新截图。缺图时保留已知的 `not_captured`、`disabled`、`budget_exceeded`、`evicted` 等框架状态；单图及附件预算另行记录。
+
+支持 #1622 的宿主可显式设置 `CaptureConfig=true`，让每次识别和动作携带实际使用的配置。MaaTrace 优先存储此快照（含默认值和覆盖，同一操作起止一致）；未开启或旧版宿主仍按通知时刻查询配置。动态 ROI / target 引用仍保持配置形式，不等于解析后的坐标。上述选项影响宿主所有 Tasker，使用 MaaAgent 时在宿主进程设置。
 
 例如，Linux/macOS 启用全部可用识别图片：
 
@@ -136,11 +138,13 @@ MaaTraceRecordStopRequest(tasker, "user");
 
 `MaaTraceGetStatus()` 返回 UTF-8 JSON，含 `state`、`accepted`、`written`、`dropped`、`recording_errors`、`truncated`。指针有效至同线程下次调用，此接口不会初始化记录器。`Flush`/`Shutdown` 的非零返回值不等于轨迹完整，仍应检查丢失计数。
 
+支持 #1622 的宿主也可以使用 `MaaGlobalFlushPlugins()` 和 `MaaGlobalShutdownPlugins()`。MaaTrace 导出标准 `OnPluginFlush` / `OnPluginShutdown` hook，转发到同一套收尾逻辑。完整刷新前应等待操作结束；框架 Shutdown 前必须销毁全部 Tasker、Resource、Controller，并从宿主线程显式调用。异常退出不保证收尾。
+
 插件保留至进程结束，不支持热卸载。POSIX 注册 `atexit` 收尾；Windows 避免在 DLL loader lock 下等待线程，建议宿主显式 `MaaTraceShutdown()` 完成 manifest。未显式收尾时，已写 JSONL 可读，但 manifest 可能保持 `recording`，队列尾部可能丢失。不要从 `DllMain` 调用阻塞接口。
 
 ## 框架兼容与构建
 
-MaaTrace 需要 MaaFramework **v5.16.1 或更新版本**。该版本修复了 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽的问题。插件通过标准 `OnContextEvent` 入口自动采集节点事件，不再按任务手动添加或移除 Context sink。插件须在创建 Tasker 前加载；运行期间清除宿主的 Context sinks 会中断节点采集。
+MaaTrace 需要 MaaFramework **v5.16.1 或更新版本**。该版本修复了 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽的问题。插件通过标准 `OnContextEvent` 入口自动采集节点事件，不再按任务手动添加或移除 Context sink。插件须在创建 Tasker 前加载；旧版运行期间清除宿主的 Context sinks 会中断节点采集，支持 #1622 的框架将插件订阅与用户 sink 分开。新观测字段缺失时保持旧版兼容，新图片状态接口按需动态查询，不增加对未发布导出符号的强依赖。
 
 需要 CMake 3.22+、C++17 编译器及匹配平台的 MaaFramework SDK；测试与命令行工具需要 Python 3.10+。CI 固定 SDK `v5.16.1` 并校验下载 SHA256。将 SDK 解压到 `deps` 后：
 
@@ -160,7 +164,7 @@ cpack --config build/CPackConfig.cmake -C Release -B dist
 
 [Upstream pipeline integration](https://github.com/MaaXYZ/MaaTrace/actions/workflows/upstream-pipeline.yml) 直接下载 MaaFramework 官方 `test.yml` 成功 main push 的 `MAA-<platform>-full` 产物，保留其 SDK、`PipelineTesting` 和整套回放/模型资源。它用该 SDK 编译当前 MaaTrace，放入 `bin/plugins/` 后运行官方测试程序，不修改上游测试代码。
 
-该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行，且上游提交必须包含 `v5.16.1` 的 Context 回调修复。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次兼容的成功运行；留空则选择最新且产物未过期的兼容成功运行。
+该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行，且上游提交必须包含 #1622（`f498555e09526f200c8840d6eecce9c30e942ec4`）。先运行完整 CTest 和必须具备新接口的原生观测测试，再运行官方 PipelineTesting。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次兼容的成功运行；留空则选择最新且产物未过期的兼容成功运行。
 
 除了要求 `PipelineTesting` 正常退出，CI 还验证 JSONL 非空、任务/节点/候选/识别/动作事件齐全、Context 采集方式与配置快照及 SHA256 正确、没有记录缺口或截断。官方测试中的预期失败和手动停止不视为记录器故障；Windows 的 manifest 可以仍为 `recording`。截图不是这条 CI 的必需条件，图片证据由独立测试覆盖。
 

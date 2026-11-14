@@ -21,18 +21,22 @@ def main():
         try:
             libs.emit('Tasker', tasker, 'Tasker.Task.Starting', {'task_id': 42, 'entry':'A'})
             emit(tasker, b'my_script.popup_seen', b'{"kind":"network"}')
-            stop(tasker, b'user')
+            stop(tasker, b'cancelled')
             libs.emit('Tasker', tasker, 'Tasker.Task.Failed', {'task_id':42,'entry':'A'})
             emit(None, b'my_script.summary', b'{"tasks":1}')
+            emit(None, b'my_script.metadata', b'{"parent":{},"pipeline":{},"reason":"cancelled"}')
             assert libs.plugin.MaaTraceShutdown() == 1
             events = read_events(output)
             custom = next(e for e in events if e['type']=='custom.event')
             stopping = next(e for e in events if e['type']=='stop.requested')
             assert custom['run_id'] == stopping['run_id'] == events[0]['run_id']
             assert custom['data']['native_details']['kind'] == 'network'
-            assert stopping['data']['native_details']['reason'] == 'user'
+            assert stopping['data']['native_details']['reason'] == 'cancelled'
             assert events[-1]['run_id'] is None
             assert not any(e['data'].get('outcome') == 'cancelled' for e in events)
+            manifest = json.loads(next(output.glob('session-*/manifest.json')).read_text(encoding='utf-8'))
+            assert all(manifest['capabilities'][key] is False for key in
+                       ('native_parent_links', 'runtime_config_snapshots', 'explicit_transitions', 'stop_reason'))
         finally:
             libs.fw.MaaTaskerDestroy(tasker)
     print('Host APIs passed')

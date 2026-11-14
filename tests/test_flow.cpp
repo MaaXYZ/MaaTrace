@@ -31,7 +31,7 @@ struct Trace {
         Json data = {{"native_details", native}, {"enrichment", enrichment}};
         if (!native_status.empty()) {
             data["native_status"] = native_status;
-            data["outcome"] = type == "recognition.finished" ? (native_status == "Succeeded" ? "matched" : "unknown")
+            data["outcome"] = native_status == "Cancelled" || native.value("reason", "") == "cancelled" ? "cancelled" : type == "recognition.finished" ? (native_status == "Succeeded" ? "matched" : "unknown")
                 : (native_status == "Succeeded" ? "succeeded" : "failed");
         }
         Json event = {{"seq", ++seq}, {"type", type}, {"source", task_event ? "tasker" : "context"},
@@ -215,6 +215,30 @@ void list_origin_and_overlap()
     check(third_start["span_id"].is_null(), "pairing stays disabled until enclosing node ends");
 }
 
+void cancelled_operations_do_not_infer_success()
+{
+    Trace t;
+    t.start();
+    t.begin_node(101, "A");
+    const Json list = Json::array({{{"name", "B"}}});
+    const auto started = t.start_decision("A", list);
+    t.reco(501, "B", true);
+    const auto end = t.emit("decision.finished", {{"name", "A"}, {"list", list}, {"reason", "cancelled"}});
+    check(end["span_id"] == started["span_id"], "cancelled decision closes the observed span");
+    check(flow(end)["selected_recognition_span_id"].is_null(), "cancelled decision cannot infer selection from a hit");
+    const auto node = t.emit("node.finished", {{"name", "A"}, {"node_id", 101}, {"_status", "Cancelled"},
+        {"node_details", {{"name", "B"}, {"reco_id", 501}, {"action_id", 601}}}}, t.span("node", 101));
+    check(!flow(node).contains("transition"), "cancelled node cannot infer a completed transition");
+
+    t.begin_node(102, "A");
+    t.start_decision("A", list);
+    t.emit("recognition.started", {{"name", "B"}}, t.span("recognition", 502));
+    t.emit("recognition.finished", {{"name", "B"}, {"_status", "Cancelled"}}, t.span("recognition", 502));
+    const auto cancelled = t.emit("decision.finished", {{"name", "A"}, {"list", list}, {"_status", "Cancelled"}});
+    check(flow(cancelled)["attempts"][0]["outcome"] == "cancelled", "cancelled recognition keeps its explicit outcome");
+    check(flow(cancelled)["selected_recognition_span_id"].is_null(), "cancelled recognition is never a match");
+}
+
 void loop_identity_and_task_cleanup()
 {
     Trace t;
@@ -232,6 +256,128 @@ void loop_identity_and_task_cleanup()
     auto fresh = t.end_node(104, "A", "A", 503, 603);
     check(flow(fresh)["transition"]["from_span_id"].is_null(), "new task cannot inherit stale loop execution");
 }
+
+void native_hierarchy_and_missing_starts()
+{
+    Trace t;
+    t.start();
+    t.task = "2";
+    Json child = {{"context_id", 20}, {"parent_task_id", 1}, {"task_parent", {{"kind", "action"}, {"id", 601}}},
+        {"parent", {{"kind", "action"}, {"id", 601}}}, {"entry", "Child"}};
+    const auto task = t.emit("subtask.started", child, t.span("task", 2));
+    check(task["parent_span_id"] == t.span("action", 601), "subtask belongs to the native invoking action");
+    check(flow(task)["parent_task_span_id"] == t.span("task", 1), "subtask retains separate parent task identity");
+    check(flow(task)["context_id"] == "20", "native context identity takes precedence over observer handle identity");
+    check(flow(task)["provenance"] == "observed", "native hierarchy is observed rather than inferred");
+    const auto node = t.emit("recognition_node.started", {{"context_id", 20}, {"name", "Child"},
+        {"parent", {{"kind", "task"}, {"id", 2}}}}, t.span("node", 102));
+    check(node["parent_span_id"] == t.span("task", 2), "child node belongs to its native task");
+    const auto reco = t.emit("recognition.finished", {{"context_id", 20}, {"parent", {{"kind", "node"}, {"id", 102}}}},
+        t.span("recognition", 501));
+    check(reco["parent_span_id"] == node["span_id"], "native parent resolves canonical node identity without a recognition start");
+    Json gap = {{"type", "trace.gap"}};
+    t.tracker.enrich(gap);
+    const auto after_gap = t.emit("wait.finished", {{"context_id", 20}, {"parent", {{"kind", "action"}, {"id", 601}}}},
+        t.span("wait", 701));
+    check(after_gap["parent_span_id"] == t.span("action", 601), "explicit native parent survives missing association state");
+    const auto no_parent = t.emit("action.started", {{"context_id", 20}, {"parent", nullptr}, {"reco_id", 501}}, t.span("action", 602));
+    check(no_parent["parent_span_id"].is_null(), "explicit null parent never receives a temporal fallback");
+    check(flow(no_parent)["selected_recognition_span_id"] == t.span("recognition", 501), "action uses its native recognition identity");
+    child["reason"] = "completed";
+    const auto end = t.emit("subtask.finished", child, t.span("task", 2));
+    check(end["parent_span_id"] == task["parent_span_id"], "subtask terminal retains native caller even after a gap");
+    t.task = "3";
+    Json direct = {{"context_id", 30}, {"parent_task_id", 1}, {"task_parent", {{"kind", "action"}, {"id", 601}}},
+        {"parent", {{"kind", "task"}, {"id", 3}}}, {"name", "DirectRecognition"}};
+    const auto direct_reco = t.emit("recognition_node.started", direct, t.span("node", 103));
+    check(direct_reco["parent_span_id"] == t.span("task", 3), "direct recognition retains its native task without inventing a task start");
+    check(flow(direct_reco)["task_parent_span_id"] == t.span("action", 601), "direct recognition exposes caller despite no Context.Task lifecycle");
+    t.task = "4";
+    direct["context_id"] = 40;
+    direct["parent"]["id"] = 4;
+    direct["name"] = "DirectAction";
+    const auto direct_action = t.emit("action_node.started", direct, t.span("node", 104));
+    check(flow(direct_action)["task_parent_span_id"] == t.span("action", 601), "direct action exposes the native caller independently of task events");
+    direct["task_parent"] = nullptr;
+    const auto no_caller = t.emit("action_node.finished", direct, t.span("node", 104));
+    check(flow(no_caller)["task_parent_span_id"].is_null(), "explicit null task caller is preserved");
+}
+
+void native_decisions_and_duplicate_candidates()
+{
+    Trace t;
+    t.start();
+    const Json list = Json::array({{{"name", "B"}}, {{"name", "B"}}});
+    Json native = {{"context_id", 10}, {"list_id", 901}, {"node_id", 101}, {"round", 7}, {"list_type", "on_error"},
+        {"parent", {{"kind", "node"}, {"id", 101}}}, {"name", "A"}, {"list", list}};
+    const auto begin = t.emit("decision.started", native);
+    check(begin["span_id"] == t.span("decision", 901), "native list identity defines decision span");
+    check(flow(begin)["round"] == 7, "native round is used without an enclosing observed node");
+    check(flow(begin)["list_type_source"] == "native_event", "native on_error origin is not inferred from snapshots");
+    Json reco = {{"context_id", 10}, {"name", "B"}, {"parent", {{"kind", "list"}, {"id", 901}}}};
+    t.emit("recognition.started", reco, t.span("recognition", 501));
+    reco["_status"] = "Failed";
+    t.emit("recognition.finished", reco, t.span("recognition", 501));
+    reco.erase("_status");
+    t.emit("recognition.started", reco, t.span("recognition", 502));
+    t.emit("recognition.finished", reco, t.span("recognition", 502));
+    // ID-bearing rounds can overlap without pairing an end with the wrong start.
+    native["list_id"] = 902;
+    const auto other = t.emit("decision.started", native);
+    native["list_id"] = 901;
+    native["selected_index"] = 1;
+    native["reco_id"] = 502;
+    const auto end = t.emit("decision.finished", native);
+    check(end["span_id"] == begin["span_id"], "native ID pairs a round despite another open round");
+    check(flow(end)["selected_candidate_index"] == 1, "native index disambiguates duplicate candidate names");
+    check(flow(end)["selected_recognition_span_id"] == t.span("recognition", 502), "native selection identifies actual recognition");
+    check(flow(end)["selection_source"] == "native_event", "selection uses explicit scheduler result");
+    check(flow(end)["attempts"].size() == 2, "native round retains observed attempts");
+    check(flow(end)["attempts"][0]["candidate_index"].is_null(), "duplicate failed candidate remains unresolved");
+    check(flow(end)["attempts"][1]["candidate_index"] == 1, "selected recognition gains the explicit candidate index");
+    native["list_id"] = 902;
+    native["reco_id"] = 503;
+    check(t.emit("decision.finished", native)["span_id"] == other["span_id"], "finishing one native round preserves the other");
+    native["list_id"] = 903;
+    const auto orphan = t.emit("decision.finished", native);
+    check(flow(orphan)["selected_candidate_index"] == 1, "explicit selection remains available without an observed start");
+    check(!flow(orphan).contains("attempts"), "missing start does not fabricate an empty observed attempt history");
+    native["list_id"] = 904;
+    native["selected_index"] = 5;
+    const auto invalid = t.emit("decision.finished", native);
+    check(flow(invalid)["selected_candidate_index"].is_null(), "out of range native index does not produce an invalid relationship");
+    native["selected_index"] = 0;
+    native["reason"] = "cancelled";
+    const auto cancelled = t.emit("decision.finished", native);
+    check(flow(cancelled)["selected_recognition_span_id"].is_null(), "cancellation overrides otherwise successful native selection fields");
+}
+
+void native_transitions_do_not_duplicate_inference()
+{
+    Trace t;
+    t.start();
+    Json transition = {{"context_id", 10}, {"parent", {{"kind", "task"}, {"id", 1}}},
+        {"from_node_id", 0}, {"to_node_id", 101}, {"from", "A"}, {"to", "A"}, {"reason", "entry"}};
+    const auto entry = t.emit("node.transition", transition);
+    check(flow(entry)["transition"]["from_span_id"].is_null(), "native entry has no preceding execution");
+    check(flow(entry)["transition"]["to_span_id"] == t.span("node", 101), "native transition identifies actual execution");
+    check(flow(entry)["transition"]["provenance"] == "observed", "native edge is observed");
+    Json node = {{"context_id", 10}, {"parent", {{"kind", "task"}, {"id", 1}}}, {"name", "A"}, {"node_id", 101}};
+    t.emit("node.started", node, t.span("node", 101));
+    node["node_details"] = {{"name", "B"}, {"reco_id", 501}, {"action_id", 601}};
+    const auto end = t.emit("node.finished", node, t.span("node", 101));
+    check(flow(end)["executed_node_name"] == "B", "native node result remains available");
+    check(!flow(end).contains("transition"), "native node terminal does not duplicate scheduler edge with a guessed edge");
+    transition["from_node_id"] = 104;
+    transition["to_node_id"] = 101;
+    transition["from"] = "Handler";
+    transition["to"] = "A";
+    transition["reason"] = "jump_back";
+    const auto jump = t.emit("node.transition", transition);
+    check(flow(jump)["transition"]["from_span_id"] == t.span("node", 104), "jump back keeps explicit source despite no observed start");
+    check(flow(jump)["transition"]["to_span_id"] == t.span("node", 101), "jump back targets original execution instance");
+    check(flow(jump)["transition"]["reason"] == "jump_back", "scheduler reason is preserved");
+}
 } // namespace
 
 int main()
@@ -243,8 +389,12 @@ int main()
         nested_scopes_and_waits();
         gaps_and_missing_information();
         loop_identity_and_task_cleanup();
+        cancelled_operations_do_not_infer_success();
         list_origin_and_overlap();
-        std::cout << "PASS flow associations (7 scenarios)\n";
+        native_hierarchy_and_missing_starts();
+        native_decisions_and_duplicate_candidates();
+        native_transitions_do_not_duplicate_inference();
+        std::cout << "PASS flow associations (11 scenarios)\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "FAIL flow associations: " << e.what() << '\n';

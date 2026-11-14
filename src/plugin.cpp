@@ -16,6 +16,13 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 namespace {
 
 using Json = nlohmann::json;
@@ -154,7 +161,7 @@ bool terminal(std::string_view message)
         return false;
     }
     const auto suffix = message.substr(pos + 1);
-    return suffix == "Succeeded" || suffix == "Failed";
+    return suffix == "Succeeded" || suffix == "Failed" || suffix == "Cancelled";
 }
 
 bool starts_with(std::string_view value, std::string_view prefix)
@@ -191,11 +198,46 @@ Json recognition_detail(MaaTasker* tasker, const Json& details)
     };
 }
 
+using ImageStatusQuery = MaaBool (*)(const MaaTasker*, MaaRecoId, MaaStringBuffer*);
+
+ImageStatusQuery image_status_query()
+{
+    // Resolve against the linked framework, retaining binary compatibility with
+    // released SDKs that do not export the optional observation API yet.
+#ifdef _WIN32
+    HMODULE module{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&MaaVersion), &module)) return nullptr;
+    return reinterpret_cast<ImageStatusQuery>(GetProcAddress(module, "MaaTaskerGetRecognitionImageStatus"));
+#else
+    Dl_info info{};
+    if (!dladdr(reinterpret_cast<void*>(&MaaVersion), &info) || !info.dli_fname) return nullptr;
+    void* module = dlopen(info.dli_fname, RTLD_NOW | RTLD_LOCAL);
+    if (!module) return nullptr;
+    auto query = reinterpret_cast<ImageStatusQuery>(dlsym(module, "MaaTaskerGetRecognitionImageStatus"));
+    dlclose(module);
+    return query;
+#endif
+}
+
+std::string current_image_status(MaaTasker* tasker, MaaId id)
+{
+    static const auto query = image_status_query();
+    if (!query) return {};
+    StringBuffer status;
+    return query(tasker, id, status) ? status.str() : std::string();
+}
+
 Json recognition_image(MaaTasker* tasker, const Json& details, std::string_view message,
                        std::vector<maa_trace::Attachment>& attachments)
 {
     const auto& policy = image_policy();
     Json status = {{"policy", policy.name}, {"source", "recognition_runtime_cache"}};
+    const auto reco = details.find("reco_details");
+    if (reco != details.end() && reco->is_object()) {
+        const auto image_status = reco->find("image_status");
+        if (image_status != reco->end() && image_status->is_string()) status["native_image_status"] = *image_status;
+    }
     auto unavailable = [&](const char* availability, const char* reason) {
         status["availability"] = availability;
         status["reason"] = reason;
@@ -217,8 +259,15 @@ Json recognition_image(MaaTasker* tasker, const Json& details, std::string_view 
         return unavailable("unavailable", "recognition_cache_miss");
     }
     if (MaaImageBufferIsEmpty(raw)) {
-        // Do not enable debug mode or capture a new controller frame: that would
-        // change host behavior and substitute a different image as evidence.
+        const auto current = current_image_status(tasker, id);
+        if (!current.empty()) {
+            status["current_image_status"] = current;
+            return unavailable("unavailable", current == "available" ? "unavailable" : current.c_str());
+        }
+        if (status.contains("native_image_status") && status["native_image_status"] != "available") {
+            const auto reason = status["native_image_status"].get<std::string>();
+            return unavailable("unavailable", reason.c_str());
+        }
         return unavailable("unavailable", "debug_required_or_not_retained");
     }
     const auto size = MaaImageBufferGetEncodedSize(raw);
@@ -308,10 +357,20 @@ void MAA_CALL context_event(void* handle, const char* message, const char* detai
         const std::string_view event = message ? message : "";
         const auto details = parse_json(details_json);
         if (tasker && handle && details.is_object()) {
-            extra["context_id"] = context_id(tasker, handle, native_id(details, "task_id"));
-            extra["context_identity_source"] = "callback_handle_and_native_task";
+            const auto native_context = native_id(details, "context_id");
+            if (native_context > 0) {
+                extra["context_id"] = std::to_string(native_context);
+                extra["context_identity_source"] = "native_event";
+            } else {
+                extra["context_id"] = context_id(tasker, handle, native_id(details, "task_id"));
+                extra["context_identity_source"] = "callback_handle_and_native_task";
+            }
         }
-        if (handle && details.is_object() && event.size() >= 9 && event.substr(event.size() - 9) == ".Starting") {
+        if (details.is_object() && details.contains("pipeline") && details["pipeline"].is_object()
+            && (starts_with(event, "Node.Recognition.") || starts_with(event, "Node.Action."))) {
+            extra["effective_node"] = {{"name", details.value("name", std::string())}, {"value", details["pipeline"]},
+                                       {"source", "runtime_pipeline_snapshot"}};
+        } else if (handle && details.is_object() && event.size() >= 9 && event.substr(event.size() - 9) == ".Starting") {
             const auto name = details.find("name");
             if (name != details.end() && name->is_string() && !name->get_ref<const std::string&>().empty()) {
                 StringBuffer node;
@@ -339,8 +398,7 @@ void MAA_CALL context_event(void* handle, const char* message, const char* detai
                        || starts_with(event, "Node.ActionNode.")) {
                 extra["node"] = node_detail(tasker, details);
             }
-            // WaitFreezes writes its cache AFTER notifying; native details already
-            // contain elapsed/reco_ids/roi. Do not query the not-yet-existing cache.
+            // Native WaitFreezes details already contain elapsed/reco_ids/roi.
         }
         maa_trace::record("context", owner, message, details_json, std::move(extra), std::move(attachments));
     } catch (...) {
@@ -422,8 +480,10 @@ extern "C" MAA_TRACE_API void OnTaskerEvent(void* handle, const char* message, c
         maa_trace::report_error("tasker_enrichment_failed");
         maa_trace::record("tasker", owner, message, details_json);
     }
-    if (finished) {
+    if (finished || event == "Tasker.Destroying") {
         clear_contexts(tasker);
+    }
+    if (finished) {
         maa_trace::flush();
     }
 }
@@ -449,4 +509,14 @@ extern "C" MAA_TRACE_API void OnControllerEvent(void* handle, const char* messag
 extern "C" MAA_TRACE_API void OnContextEvent(void* handle, const char* message, const char* details_json, void* trans_arg)
 {
     context_event(handle, message, details_json, trans_arg);
+}
+
+extern "C" MAA_TRACE_API void OnPluginFlush(void)
+{
+    MaaTraceFlush();
+}
+
+extern "C" MAA_TRACE_API void OnPluginShutdown(void)
+{
+    MaaTraceShutdown();
 }

@@ -64,6 +64,11 @@ def execute_case(args):
         setup_api(fw)
         debug = BOOL(args.case != "no_debug")
         assert fw.MaaGlobalSetOption(6, C.byref(debug), C.sizeof(debug))
+        if hasattr(fw, "MaaTaskerGetRecognitionImageStatus"):
+            # Debug SDK builds may retain annotation images independently of
+            # DebugMode. This fixture tests raw-image retention only.
+            draws = BOOL(False)
+            assert fw.MaaGlobalSetOption(11, C.byref(draws), C.sizeof(draws))
         assert fw.MaaGlobalLoadPlugin(os.fsencode(args.plugin))
         bundle = root / "resource"
         (bundle / "pipeline").mkdir(parents=True)
@@ -101,7 +106,7 @@ def execute_case(args):
                 assert all(s["availability"] == "disabled" for s in statuses)
                 assert not artifacts
             elif args.case == "no_debug":
-                assert all(s["reason"] == "debug_required_or_not_retained" for s in statuses)
+                assert all(s["reason"] in ("debug_required_or_not_retained", "not_captured") for s in statuses)
                 assert not artifacts
             elif args.case == "image_limit":
                 assert all(s["reason"] == "image_size_limit" for s in statuses)

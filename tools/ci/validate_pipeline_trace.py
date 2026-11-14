@@ -26,6 +26,7 @@ _FATAL_WARNING_CODES = {
     "incomplete_tail", "missing_newline", "source_changed", "tracking_limit",
     "recording_gap", "recording_truncated", "invalid_native_event",
 }
+_TASKER_LIFECYCLE_MESSAGES = ("Tasker.Created", "Tasker.Destroying")
 _MAX_FINDINGS = 200
 
 
@@ -140,8 +141,12 @@ class PipelineValidation:
                 self.report["native_failed_events"] += 1
             if kind in ("trace.gap", "trace.truncated", "trace.invalid_event"):
                 self.finding("error", "recorder_diagnostic", f"unexpected CI recording diagnostic: {kind}", name, line)
+            tasker_lifecycle = (source == "tasker" and kind == "framework.event"
+                                and data.get("native_message") in _TASKER_LIFECYCLE_MESSAGES)
             if source in ("tasker", "context"):
-                if not _identifier(run) or not _identifier(task):
+                # Object lifecycle notifications exist outside task execution.
+                # Unknown execution events still need an observed task identity.
+                if not tasker_lifecycle and (not _identifier(run) or not _identifier(task)):
                     self.finding("error", "missing_task_identity", "tasker/context event needs nonempty run_id and task_id", name, line)
                 native_task = native.get("task_id")
                 if native_task is not None and str(native_task) != task:

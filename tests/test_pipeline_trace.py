@@ -87,6 +87,76 @@ class PipelineTraceTests(unittest.TestCase):
         self.assertEqual(report["config_file_count"], 1)
         self.assertGreater(report["warning_count"], 0)
 
+    def test_tasker_object_lifecycle_outside_runs_is_accepted(self):
+        def lifecycle(message):
+            return event(1, "framework.event", source="tasker", task=None, run=None, data={
+                "native_message": message, "native_details": {}, "native_ids": {},
+            })
+
+        self.events = [lifecycle("Tasker.Created"), *self.events, lifecycle("Tasker.Destroying")]
+        for seq, item in enumerate(self.events, 1):
+            item["seq"], item["elapsed_us"] = seq, seq * 100
+        self.write()
+        report = self.report()
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["tasks_started"], 1)
+        self.assertEqual(report["tasks_finished"], 1)
+        self.assertEqual(report["run_count"], 1)
+        self.assertEqual(report["event_types"]["framework.event"], 2)
+
+    def test_lifecycle_exemption_does_not_hide_missing_execution_identity(self):
+        cases = (
+            ("tasker", "task.started", "Tasker.Task.Starting"),
+            ("tasker", "task.finished", "Tasker.Task.Failed"),
+            ("tasker", "framework.event", "Tasker.FutureOperation.Created"),
+            ("tasker", "framework.event", "Tasker.Created.Extra"),
+            ("tasker", "framework.event", ["Tasker.Created"]),
+            ("tasker", "task.started", "Tasker.Created"),
+            ("context", "framework.event", "Tasker.Created"),
+            ("context", "framework.event", "Node.PipelineNode.Cancelled"),
+        )
+        for source, kind, message in cases:
+            with self.subTest(source=source, kind=kind, message=message):
+                extra = event(12, kind, source=source, task=None, run=None, data={
+                    "native_message": message, "native_details": {}, "native_ids": {},
+                })
+                self.write([*self.events, extra])
+                self.assert_error("missing_task_identity")
+
+    def test_lifecycle_exemption_preserves_native_identity_consistency_check(self):
+        extra = event(12, "framework.event", source="tasker", task=None, run=None, data={
+            "native_message": "Tasker.Destroying",
+        })
+        self.write([*self.events, extra])
+        self.assert_error("task_identity_mismatch")
+
+    def test_explicit_cancellation_closes_node_span(self):
+        self.events.insert(-1, event(11, "node.finished", "interrupted-node", data={
+            "native_message": "Node.PipelineNode.Cancelled", "native_status": "Cancelled", "outcome": "cancelled",
+        }))
+        self.events[-1]["seq"], self.events[-1]["elapsed_us"] = 12, 1200
+        task = next(item for item in self.events if item["type"] == "task.finished")
+        task["data"].update({"native_message": "Tasker.Task.Succeeded", "native_status": "Succeeded", "outcome": "cancelled"})
+        task["data"]["native_details"]["reason"] = "cancelled"
+        self.write()
+        report = self.report()
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["unclosed_spans"], 0)
+
+    def test_legacy_recorder_cancelled_node_event_in_a_run_is_preserved(self):
+        # Records from older MaaTrace versions remain readable.
+        cancelled = event(11, "framework.event", "interrupted-node", data={
+            "native_message": "Node.PipelineNode.Cancelled",
+            "native_details": {"task_id": 1, "node_id": 2, "reason": "cancelled"},
+        })
+        self.events.insert(-1, cancelled)
+        self.events[-1]["seq"], self.events[-1]["elapsed_us"] = 12, 1200
+        self.write()
+        report = self.report()
+        self.assertTrue(report["valid"], report)
+        self.assertEqual(report["event_types"]["framework.event"], 1)
+        self.assertEqual(report["unclosed_spans"], 1)
+
     def test_windows_recording_manifest_without_shutdown_is_accepted(self):
         self.manifest = {"schema_version": "1.0", "session_id": "session-test", "events": "events.jsonl", "state": "recording"}
         self.write()

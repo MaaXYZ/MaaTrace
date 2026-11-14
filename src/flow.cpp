@@ -101,6 +101,8 @@ struct Scope {
     std::map<std::string, Operation> waits;
     uint64_t round = 0;
     bool decision_pairing_ambiguous = false;
+    std::map<std::string, Decision> native_decisions;
+    size_t native_entries = 0;
 };
 
 void parent(Json& event, Json& flow, const Operation& operation)
@@ -186,6 +188,190 @@ const Json& node_detail(const Json& native, const Json& enrichment)
     static const auto* empty = new Json(Json::object());
     return *empty;
 }
+
+std::optional<uint64_t> unsigned_value(const Json& value, const char* key)
+{
+    const auto it = value.find(key);
+    if (it == value.end()) return std::nullopt;
+    if (it->is_number_unsigned()) return it->get<uint64_t>();
+    if (it->is_number_integer() && it->get<int64_t>() >= 0) return it->get<uint64_t>();
+    return std::nullopt;
+}
+
+std::string operation_ref(const std::string& run, const Json& operation)
+{
+    const auto kind = text(operation, "kind");
+    const auto number = id(operation, "id");
+    if (kind == "list") return ref(run, "decision", number);
+    if (kind == "wait_freezes") return ref(run, "wait", number);
+    if (kind == "task" || kind == "node" || kind == "recognition" || kind == "action") {
+        return ref(run, kind.c_str(), number);
+    }
+    return {};
+}
+
+void native_parent(Json& event, Json& flow, const Json& native, const std::string& run, bool subtask)
+{
+    if (native.contains("task_parent")) {
+        const auto caller = operation_ref(run, native["task_parent"]);
+        flow["task_parent_span_id"] = caller.empty() ? Json(nullptr) : Json(caller);
+    }
+    const char* key = subtask && native.contains("task_parent") ? "task_parent" : "parent";
+    if (native.contains(key)) {
+        const auto span = operation_ref(run, native[key]);
+        event["parent_span_id"] = span.empty() ? Json(nullptr) : Json(span);
+        flow["parent_source"] = "native_event";
+    }
+    const auto parent_task = ref(run, "task", id(native, "parent_task_id"));
+    if (!parent_task.empty()) flow["parent_task_span_id"] = parent_task;
+}
+
+void native_node_result(Json& flow, const Json& native, const Json& enrichment, const std::string& run)
+{
+    const auto& detail = node_detail(native, enrichment);
+    const auto selected = text(detail, "name");
+    if (!selected.empty()) flow["executed_node_name"] = selected;
+    if (detail.contains("jump_back") && detail["jump_back"].is_boolean()) flow["jump_back"] = detail["jump_back"];
+    const auto reco = ref(run, "recognition", id(detail, "reco_id"));
+    const auto action = ref(run, "action", id(detail, "action_id"));
+    if (!reco.empty()) flow["selected_recognition_span_id"] = reco;
+    if (!action.empty()) flow["action_span_id"] = action;
+    if (!detail.empty()) flow["result_source"] = "native_node_detail";
+}
+
+void native_decision_metadata(Json& flow, const Json& native, const std::string& run)
+{
+    if (native.contains("list") && native["list"].is_array()) flow["candidates"] = native["list"];
+    if (const auto round = unsigned_value(native, "round")) flow["round"] = *round;
+    const auto list_type = text(native, "list_type");
+    if (!list_type.empty()) {
+        flow["list_type"] = list_type;
+        flow["list_type_source"] = "native_event";
+    }
+    const auto node = ref(run, "node", id(native, "node_id"));
+    flow["node_span_id"] = node.empty() ? Json(nullptr) : Json(node);
+}
+
+void native_attempts(Json& flow, const Decision& decision)
+{
+    flow["attempts"] = Json::array();
+    for (const auto& attempt : decision.attempts) {
+        flow["attempts"].push_back({{"recognition_span_id", attempt.operation.span}, {"node_name", attempt.operation.name},
+            {"start_seq", attempt.operation.seq}, {"finish_seq", attempt.finish_seq ? Json(attempt.finish_seq) : Json(nullptr)},
+            {"candidate_index", attempt.candidate ? Json(*attempt.candidate) : Json(nullptr)},
+            {"outcome", attempt.outcome.empty() ? "unknown" : attempt.outcome}});
+    }
+}
+
+void native_decision(Json& event, Json& flow, Scope& scope, const Json& native, const std::string& run, uint64_t seq, bool starting)
+{
+    const auto span = ref(run, "decision", id(native, "list_id"));
+    if (span.empty()) return;
+    event["span_id"] = span;
+    native_decision_metadata(flow, native, run);
+    if (starting) {
+        Decision decision;
+        decision.operation = {span, text(event, "parent_span_id"), text(native, "name"), seq, 0};
+        if (native.contains("list") && native["list"].is_array()) decision.candidates = native["list"];
+        const auto existing = scope.native_decisions.find(span);
+        if (existing != scope.native_decisions.end()) {
+            scope.native_entries -= 1 + existing->second.attempts.size();
+            scope.native_decisions.erase(existing);
+        }
+        scope.native_decisions.emplace(span, std::move(decision));
+        ++scope.native_entries;
+        return;
+    }
+    const auto existing = scope.native_decisions.find(span);
+    flow["selected_recognition_span_id"] = nullptr;
+    flow["selected_candidate_index"] = nullptr;
+    const auto& data = event["data"];
+    const auto index = unsigned_value(native, "selected_index");
+    const auto reco = ref(run, "recognition", id(native, "reco_id"));
+    const bool selected = text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled"
+        && index && native.contains("list") && native["list"].is_array() && *index < native["list"].size() && !reco.empty();
+    if (selected) {
+        flow["selected_recognition_span_id"] = reco;
+        flow["selected_candidate_index"] = *index;
+        flow["selection_source"] = "native_event";
+    } else if (text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled") {
+        flow["selection_source"] = "unavailable";
+    }
+    if (existing == scope.native_decisions.end()) return;
+    auto& decision = existing->second;
+    evidence(flow, decision.operation.seq);
+    if (selected) {
+        for (auto& attempt : decision.attempts) {
+            if (attempt.operation.span == reco) attempt.candidate = static_cast<size_t>(*index);
+        }
+    }
+    native_attempts(flow, decision);
+    scope.native_entries -= 1 + decision.attempts.size();
+    scope.native_decisions.erase(existing);
+}
+
+void native_recognition(Json& flow, Scope& scope, const Json& native, const std::string& run,
+    const std::string& span, uint64_t seq, bool starting, const Json& data)
+{
+    const auto& enclosing = object(native, "parent");
+    if (text(enclosing, "kind") != "list") return;
+    const auto decision_span = operation_ref(run, enclosing);
+    if (decision_span.empty()) return;
+    flow["decision_span_id"] = decision_span;
+    const auto existing = scope.native_decisions.find(decision_span);
+    if (existing == scope.native_decisions.end() || span.empty()) return;
+    auto& decision = existing->second;
+    if (starting) {
+        decision.attempts.push_back({{span, decision_span, text(native, "name"), seq, decision.operation.seq}, std::nullopt, 0, {}});
+        ++scope.native_entries;
+        return;
+    }
+    for (auto& attempt : decision.attempts) {
+        if (attempt.operation.span != span) continue;
+        attempt.finish_seq = seq;
+        attempt.outcome = text(data, "outcome");
+        evidence(flow, attempt.operation.seq);
+        break;
+    }
+}
+
+void native_enrich(Json& event, Json& flow, Scope& scope, const Json& native, const Json& enrichment,
+    const std::string& run, const std::string& type, uint64_t seq)
+{
+    // Explicit identities remain usable after a missing start or association reset.
+    // Do not replace an explicit null parent with a temporal guess.
+    if (scope.native_entries >= 16384) {
+        scope.native_decisions.clear();
+        scope.native_entries = 0;
+        flow["association_reset"] = "state_capacity";
+    }
+    const bool subtask = type == "subtask.started" || type == "subtask.finished";
+    native_parent(event, flow, native, run, subtask);
+    if (type == "node.transition") {
+        const auto from = ref(run, "node", id(native, "from_node_id"));
+        const auto to = ref(run, "node", id(native, "to_node_id"));
+        flow["transition"] = {{"from_span_id", from.empty() ? Json(nullptr) : Json(from)},
+            {"to_span_id", to.empty() ? Json(nullptr) : Json(to)}, {"from_node_name", text(native, "from")},
+            {"to_node_name", text(native, "to")}, {"reason", text(native, "reason")},
+            {"provenance", "observed"}, {"evidence_seqs", Json::array({seq})}};
+    } else if (type == "decision.started" || type == "decision.finished") {
+        native_decision(event, flow, scope, native, run, seq, type == "decision.started");
+    } else if (type == "recognition.started" || type == "recognition.finished") {
+        native_recognition(flow, scope, native, run, text(event, "span_id"), seq, type == "recognition.started", event["data"]);
+    } else if (type == "action.started" || type == "action.finished") {
+        const auto reco = ref(run, "recognition", id(native, "reco_id"));
+        if (!reco.empty()) flow["selected_recognition_span_id"] = reco;
+    } else if (type == "node.finished" || type == "recognition_node.finished" || type == "action_node.finished") {
+        flow["source_node_name"] = text(native, "name");
+        native_node_result(flow, native, enrichment, run);
+    } else if (type == "node.started" || type == "recognition_node.started" || type == "action_node.started") {
+        flow["source_node_name"] = text(native, "name");
+    } else if (type == "subtask.finished") {
+        scope = Scope{};
+    }
+    const auto reason = text(native, "reason");
+    if (!reason.empty()) flow["reason"] = reason;
+}
 } // namespace
 
 struct FlowTracker::State {
@@ -229,7 +415,8 @@ void FlowTracker::enrich(Json& event)
     if (!data.is_object()) return;
     const auto& native = object(data, "native_details");
     const auto& enrichment = object(data, "enrichment");
-    const auto context = text(enrichment, "context_id");
+    const auto native_context = id(native, "context_id");
+    const auto context = native_context.empty() ? text(enrichment, "context_id") : native_context;
     if (context.empty() || context == "unavailable") return;
     const State::Key scope_key{run, task, context};
     const bool state_capacity = state_->scopes.size() >= 16384 && state_->scopes.find(scope_key) == state_->scopes.end();
@@ -237,6 +424,12 @@ void FlowTracker::enrich(Json& event)
     auto& scope = state_->scopes[scope_key];
     Json flow = {{"provenance", "observed"}, {"context_id", context}, {"evidence_seqs", Json::array({seq})}};
     if (state_capacity) flow["association_reset"] = "state_capacity";
+    if (!native_context.empty() || native.contains("parent") || native.contains("task_parent")
+        || native.contains("list_id") || type == "node.transition" || type == "subtask.started" || type == "subtask.finished") {
+        native_enrich(event, flow, scope, native, enrichment, run, type, seq);
+        data["flow"] = std::move(flow);
+        return;
+    }
     const auto name = text(native, "name");
     const auto root = state_->roots.find(run);
     const bool node_start = type == "node.started" || type == "recognition_node.started" || type == "action_node.started";
@@ -312,7 +505,7 @@ void FlowTracker::enrich(Json& event)
         }
         flow["selected_recognition_span_id"] = nullptr;
         flow["selected_candidate_index"] = nullptr;
-        if (text(data, "native_status") == "Succeeded" && !decision.ambiguous && matches.size() == 1) {
+        if (text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled" && !decision.ambiguous && matches.size() == 1) {
             const auto& hit = *matches.front();
             flow["selected_recognition_span_id"] = hit.operation.span;
             if (hit.candidate) flow["selected_candidate_index"] = *hit.candidate;
@@ -322,7 +515,7 @@ void FlowTracker::enrich(Json& event)
             scope.selection = Selection{decision.operation.span, hit.operation.span, hit.operation.name, hit.candidate, seq};
         } else {
             scope.selection.reset();
-            if (text(data, "native_status") == "Succeeded") flow["selection_source"] = "unavailable";
+            if (text(data, "native_status") == "Succeeded" && text(data, "outcome") != "cancelled") flow["selection_source"] = "unavailable";
         }
     } else if (type == "recognition.started") {
         if (span.empty()) return;
@@ -408,7 +601,7 @@ void FlowTracker::enrich(Json& event)
         // operations where native predecessor and previous executed name agree.
         // In particular, jump-back may restore a different predecessor: keep it
         // unresolved instead of attaching to the immediately preceding execution.
-        if (paired && scope.node_kind == "node" && !selected_name.empty() && !reco.empty()) {
+        if (paired && scope.node_kind == "node" && text(data, "outcome") != "cancelled" && !selected_name.empty() && !reco.empty()) {
             Json edge = {{"to_span_id", span}, {"to_node_name", selected_name},
                 {"from_node_name", scope.node.name}, {"from_span_id", nullptr},
                 {"provenance", "inferred"}, {"reason", "selected_node_observed"},

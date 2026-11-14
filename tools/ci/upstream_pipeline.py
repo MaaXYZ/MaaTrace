@@ -2,7 +2,7 @@
 """Resolve/download the official MaaFramework test artifact, then run it unchanged.
 
 Only successful pushes to MaaXYZ/MaaFramework main's test.yml containing the
-v5.16.1 Context plugin callback fix are accepted.
+runtime observation APIs from PR #1622 are accepted.
 Authentication is delegated to gh; no credentials are passed to PipelineTesting.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ import zipfile
 REPOSITORY = 'MaaXYZ/MaaFramework'
 WORKFLOW = '.github/workflows/test.yml'
 PLATFORMS = ('linux-x86_64', 'win-x86_64', 'macos-aarch64')
-MINIMUM_FRAMEWORK_REF = 'v5.16.1'
+MINIMUM_FRAMEWORK_REF = 'f498555e09526f200c8840d6eecce9c30e942ec4'
 
 
 def api(endpoint):
@@ -79,7 +79,7 @@ def resolve(run_id=None):
     if run_id:
         run = validate_run(api(f'actions/runs/{run_id}'))
         if not supports_plugin_callbacks(run):
-            raise ValueError(f'Requested run predates {MINIMUM_FRAMEWORK_REF} native Context plugin callbacks')
+            raise ValueError(f'Requested run predates {MINIMUM_FRAMEWORK_REF} runtime observation APIs')
         selected = available_artifacts(artifacts(run['id']))
         if len(selected) != len(PLATFORMS):
             raise ValueError('Requested run does not have all three unexpired full artifacts')

@@ -22,6 +22,9 @@ MAA_TRACE_API void OnResourceEvent(void*, const char*, const char*, void*);
 MAA_TRACE_API void OnControllerEvent(void*, const char*, const char*, void*);
 MAA_TRACE_API void OnTaskerEvent(void*, const char*, const char*, void*);
 MAA_TRACE_API void OnContextEvent(void*, const char*, const char*, void*);
+/* Optional ABI-v1 hooks, called by the framework's explicit plugin management. */
+MAA_TRACE_API void OnPluginFlush(void);
+MAA_TRACE_API void OnPluginShutdown(void);
 
 /* Wait for previously accepted events to reach the file stream (not fsync).
  * Returns 0 on recording errors. Never call from DllMain. */
