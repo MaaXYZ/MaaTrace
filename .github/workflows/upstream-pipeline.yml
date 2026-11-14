@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_run_id:
-        description: 'Successful MaaFramework main test run containing #1622; blank selects the latest compatible run with full artifacts'
+        description: 'Successful MaaFramework main test run at/after v6.0.0-alpha.1; blank selects the latest compatible full artifacts'
         required: false
         type: string
 

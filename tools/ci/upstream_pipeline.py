@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Resolve/download the official MaaFramework test artifact, then run it unchanged.
 
-Only successful pushes to MaaXYZ/MaaFramework main's test.yml containing the
-runtime observation APIs from PR #1622 are accepted.
+Only successful pushes to MaaXYZ/MaaFramework main's test.yml containing
+v6.0.0-alpha.1's runtime observation APIs are accepted.
 Authentication is delegated to gh; no credentials are passed to PipelineTesting.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ import zipfile
 REPOSITORY = 'MaaXYZ/MaaFramework'
 WORKFLOW = '.github/workflows/test.yml'
 PLATFORMS = ('linux-x86_64', 'win-x86_64', 'macos-aarch64')
-MINIMUM_FRAMEWORK_REF = 'f498555e09526f200c8840d6eecce9c30e942ec4'
+MINIMUM_FRAMEWORK_REF = 'v6.0.0-alpha.1'
 
 
 def api(endpoint):

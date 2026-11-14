@@ -10,7 +10,7 @@
 
 节点定义名称不充当执行身份。同一原生操作的开始和结束用原生 ID 生成 `<run_id>:<kind>:<native_id>`：任务使用 `task_id`，识别使用 `reco_id`，动作使用 `action_id`，节点使用 `node_id`，等待使用 `wf_id`。缺少 run 或有效身份时保留为空。
 
-支持 MaaFramework #1622 时，候选扫描使用 `<run_id>:decision:<list_id>`，嵌套任务使用 `<run_id>:task:<task_id>`。框架的 `parent.kind: node` 统一引用 `<run_id>:node:<node_id>`，包括识别专用及动作专用节点；旧宿主仍保留 `recognition_node` / `action_node` span 前缀。没有原生 ID 的候选列表，在能配对同一上下文的开始/结束时生成 `<run_id>:decision:<start_seq>`。
+支持 MaaFramework v6.0.0-alpha.1（#1622）时，候选扫描使用 `<run_id>:decision:<list_id>`，嵌套任务使用 `<run_id>:task:<task_id>`。框架的 `parent.kind: node` 统一引用 `<run_id>:node:<node_id>`，包括识别专用及动作专用节点；旧宿主仍保留 `recognition_node` / `action_node` span 前缀。没有原生 ID 的候选列表，在能配对同一上下文的开始/结束时生成 `<run_id>:decision:<start_seq>`。
 
 `context_id` 优先使用框架进程内的原生上下文 ID，`context_identity_source` 为 `native_event`；旧版使用回调句柄和任务生成的观察标识。跨进程及跨 session 不共享身份；仅凭上下文 ID 不能证明完整调用栈。
 
@@ -225,7 +225,7 @@
 
 manifest 使用临时文件替换更新。异常退出时可能仍为 `recording`；应先读取可用事件，不要据此宣布业务任务失败。
 
-支持 #1622 时，宿主可以在所有操作结束后调用 `MaaGlobalFlushPlugins()`，并在销毁全部框架对象后调用 `MaaGlobalShutdownPlugins()`；标准 hook 转发到 MaaTrace 的同一套刷新和关闭接口。旧宿主继续使用专用 `MaaTraceFlush()` / `MaaTraceShutdown()`。这些接口应由宿主线程显式调用，不能从事件回调或 `DllMain` 发起。
+MaaFramework v6.0.0-alpha.1 或已包含 #1622 的宿主可以在所有操作结束后调用 `MaaGlobalFlushPlugins()`，并在销毁全部框架对象后调用 `MaaGlobalShutdownPlugins()`；标准 hook 转发到 MaaTrace 的同一套刷新和关闭接口。旧宿主继续使用专用 `MaaTraceFlush()` / `MaaTraceShutdown()`。这些接口应由宿主线程显式调用，不能从事件回调或 `DllMain` 发起。
 
 ## 查看摘要
 

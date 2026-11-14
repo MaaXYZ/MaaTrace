@@ -2,6 +2,8 @@
 
 MaaFramework 的可选运行记录插件，需要宿主 **MaaFramework v5.16.1 或更新版本**。将动态库放进宿主的 `plugins` 目录，正常运行任务，即可得到可以校验、解析和导出的结构化运行记录。
 
+发行包以 **MaaFramework v6.0.0-alpha.1** SDK 构建和验证，支持该版本发布的原生执行关系、配置快照、图片保留状态和统一插件收尾。v5.16.1 继续作为兼容版本验证；缺少新接口时保留原有的保守推断和专用收尾接口。
+
 项目沿用 [MaaPluginDemo](https://github.com/MaaXYZ/MaaPluginDemo) 的 plugin ABI v1 和动态库部署方式，独立构建、独立发布。发行包包含插件、记录协议、Python 命令行工具和文档；运行时使用宿主已有的 MaaFramework。
 
 ## 快速开始
@@ -68,7 +70,7 @@ python tools/maatrace.py export maa-traces/session-xxxx -o issue-trace.zip
 
 PipelineNode 的开始名称可能是来源节点，结束详情才表示选中的节点。未命中候选不等于执行节点失败；未闭合节点也不能直接判定失败。当前原生识别 `Failed` 默认映射为 `outcome: "unknown"`，因为它不总能区分未命中和执行错误。已知节点的 `Cancelled` 通知及终态明确给出的 `reason: "cancelled"` 映射为取消，并保留原始状态。
 
-MaaFramework #1622 引入的运行时观测字段会直接用于关联父子操作、候选扫描与选中项，并记录 `entry`、`next`、`on_error`、`jump_back` 流转原因。嵌套任务沿用顶层 run，拥有独立的 task span；回跳恢复已有节点的后继列表，不表示再次执行其动作。原生关系使用 `observed`，旧版推断保留 `inferred`。缺口和未提供的内部调用仍不能据此补成完整调用树。详情见 [记录协议](docs/format.md)、[事件 Schema](docs/event.schema.json) 和 [Manifest Schema](docs/manifest.schema.json)。
+MaaFramework v6.0.0-alpha.1（#1622）发布的运行时观测字段会直接用于关联父子操作、候选扫描与选中项，并记录 `entry`、`next`、`on_error`、`jump_back` 流转原因。嵌套任务沿用顶层 run，拥有独立的 task span；回跳恢复已有节点的后继列表，不表示再次执行其动作。原生关系使用 `observed`，旧版推断保留 `inferred`。缺口和未提供的内部调用仍不能据此补成完整调用树。详情见 [记录协议](docs/format.md)、[事件 Schema](docs/event.schema.json) 和 [Manifest Schema](docs/manifest.schema.json)。
 
 ## 配置
 
@@ -88,9 +90,9 @@ MaaFramework #1622 引入的运行时观测字段会直接用于关联父子操�
 
 容量参数必须为正整数。`failed` 指原生识别 `Failed` 事件，**包括正常候选未命中**，不表示只保存最终失败任务的画面。
 
-图片来自框架保留的当次识别输入缓存。旧版需要宿主启用 MaaFramework debug 模式；支持 #1622 的宿主也可以只设置全局 `RecoImageRaw=true`，通过 `RecoImageCacheBytes` / `RecoImageCacheLimit` 限制各 Tasker 的缓存。插件不会修改这些全局选项，也不会在失败后重新截图。缺图时保留已知的 `not_captured`、`disabled`、`budget_exceeded`、`evicted` 等框架状态；单图及附件预算另行记录。
+图片来自框架保留的当次识别输入缓存。旧版需要宿主启用 MaaFramework debug 模式；v6.0.0-alpha.1 或已包含 #1622 的宿主也可以只设置全局 `RecoImageRaw=true`，通过 `RecoImageCacheBytes` / `RecoImageCacheLimit` 限制各 Tasker 的缓存。插件不会修改这些全局选项，也不会在失败后重新截图。缺图时保留已知的 `not_captured`、`disabled`、`budget_exceeded`、`evicted` 等框架状态；单图及附件预算另行记录。
 
-支持 #1622 的宿主可显式设置 `CaptureConfig=true`，让每次识别和动作携带实际使用的配置。MaaTrace 优先存储此快照（含默认值和覆盖，同一操作起止一致）；未开启或旧版宿主仍按通知时刻查询配置。动态 ROI / target 引用仍保持配置形式，不等于解析后的坐标。上述选项影响宿主所有 Tasker，使用 MaaAgent 时在宿主进程设置。
+v6.0.0-alpha.1 或已包含 #1622 的宿主可显式设置 `CaptureConfig=true`，让每次识别和动作携带实际使用的配置。MaaTrace 优先存储此快照（含默认值和覆盖，同一操作起止一致）；未开启或旧版宿主仍按通知时刻查询配置。动态 ROI / target 引用仍保持配置形式，不等于解析后的坐标。上述选项影响宿主所有 Tasker，使用 MaaAgent 时在宿主进程设置。
 
 例如，Linux/macOS 启用全部可用识别图片：
 
@@ -138,15 +140,15 @@ MaaTraceRecordStopRequest(tasker, "user");
 
 `MaaTraceGetStatus()` 返回 UTF-8 JSON，含 `state`、`accepted`、`written`、`dropped`、`recording_errors`、`truncated`。指针有效至同线程下次调用，此接口不会初始化记录器。`Flush`/`Shutdown` 的非零返回值不等于轨迹完整，仍应检查丢失计数。
 
-支持 #1622 的宿主也可以使用 `MaaGlobalFlushPlugins()` 和 `MaaGlobalShutdownPlugins()`。MaaTrace 导出标准 `OnPluginFlush` / `OnPluginShutdown` hook，转发到同一套收尾逻辑。完整刷新前应等待操作结束；框架 Shutdown 前必须销毁全部 Tasker、Resource、Controller，并从宿主线程显式调用。异常退出不保证收尾。
+v6.0.0-alpha.1 或已包含 #1622 的宿主也可以使用 `MaaGlobalFlushPlugins()` 和 `MaaGlobalShutdownPlugins()`。MaaTrace 导出标准 `OnPluginFlush` / `OnPluginShutdown` hook，转发到同一套收尾逻辑。完整刷新前应等待操作结束；框架 Shutdown 前必须销毁全部 Tasker、Resource、Controller，并从宿主线程显式调用。异常退出不保证收尾。
 
 插件保留至进程结束，不支持热卸载。POSIX 注册 `atexit` 收尾；Windows 避免在 DLL loader lock 下等待线程，建议宿主显式 `MaaTraceShutdown()` 完成 manifest。未显式收尾时，已写 JSONL 可读，但 manifest 可能保持 `recording`，队列尾部可能丢失。不要从 `DllMain` 调用阻塞接口。
 
 ## 框架兼容与构建
 
-MaaTrace 需要 MaaFramework **v5.16.1 或更新版本**。该版本修复了 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽的问题。插件通过标准 `OnContextEvent` 入口自动采集节点事件，不再按任务手动添加或移除 Context sink。插件须在创建 Tasker 前加载；旧版运行期间清除宿主的 Context sinks 会中断节点采集，支持 #1622 的框架将插件订阅与用户 sink 分开。新观测字段缺失时保持旧版兼容，新图片状态接口按需动态查询，不增加对未发布导出符号的强依赖。
+MaaTrace 需要 MaaFramework **v5.16.1 或更新版本**。该版本修复了 ABI v1 加载器将 `OnContextEvent` 放错 Controller 回调槽的问题。插件通过标准 `OnContextEvent` 入口自动采集节点事件，不再按任务手动添加或移除 Context sink。插件须在创建 Tasker 前加载；旧版运行期间清除宿主的 Context sinks 会中断节点采集，支持 #1622 的框架将插件订阅与用户 sink 分开。新观测字段缺失时保持旧版兼容，新图片状态接口按需动态查询，不增加对新导出符号的强依赖。
 
-需要 CMake 3.22+、C++17 编译器及匹配平台的 MaaFramework SDK；测试与命令行工具需要 Python 3.10+。CI 固定 SDK `v5.16.1` 并校验下载 SHA256。将 SDK 解压到 `deps` 后：
+需要 CMake 3.22+、C++17 编译器及匹配平台的 MaaFramework SDK；测试与命令行工具需要 Python 3.10+。CI 固定发行 SDK `v6.0.0-alpha.1` 并校验三个平台的下载 SHA256，同时以 `v5.16.1` 运行三平台兼容回归。alpha SDK 验收要求 `MaaVersion()` 与固定版本一致且新接口可用，不能通过跳过原生测试来完成验收。将 SDK 解压到 `deps` 后：
 
 ```sh
 cmake -S . -B build -DMAA_FRAMEWORK_ROOT="$PWD/deps" -DCMAKE_BUILD_TYPE=Release
@@ -164,7 +166,7 @@ cpack --config build/CPackConfig.cmake -C Release -B dist
 
 [Upstream pipeline integration](https://github.com/MaaXYZ/MaaTrace/actions/workflows/upstream-pipeline.yml) 直接下载 MaaFramework 官方 `test.yml` 成功 main push 的 `MAA-<platform>-full` 产物，保留其 SDK、`PipelineTesting` 和整套回放/模型资源。它用该 SDK 编译当前 MaaTrace，放入 `bin/plugins/` 后运行官方测试程序，不修改上游测试代码。
 
-该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行，且上游提交必须包含 #1622（`f498555e09526f200c8840d6eecce9c30e942ec4`）。先运行完整 CTest 和必须具备新接口的原生观测测试，再运行官方 PipelineTesting。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次兼容的成功运行；留空则选择最新且产物未过期的兼容成功运行。
+该工作流覆盖 Linux x64、Windows x64、macOS ARM64，三个平台固定使用同一次上游运行，且上游提交必须包含 `v6.0.0-alpha.1` 标签对应的源码。先运行完整 CTest 和必须具备新接口的原生观测测试，再运行官方 PipelineTesting。相关代码变更和 PR 会自动运行，也可以在 Actions 的 **Run workflow** 中填写 `upstream_run_id` 重现某次兼容的成功运行；留空则选择最新且产物未过期的兼容成功运行。
 
 除了要求 `PipelineTesting` 正常退出，CI 还验证 JSONL 非空、任务/节点/候选/识别/动作事件齐全、Context 采集方式与配置快照及 SHA256 正确、没有记录缺口或截断。官方测试中的预期失败和手动停止不视为记录器故障；Windows 的 manifest 可以仍为 `recording`。截图不是这条 CI 的必需条件，图片证据由独立测试覆盖。
 
