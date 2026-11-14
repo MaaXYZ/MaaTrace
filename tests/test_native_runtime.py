@@ -67,6 +67,7 @@ def assert_closed(libs, output):
 
 def flow_case(libs, root, output, plugin_path):
     fw = libs.fw
+    setup_api(fw)
     option(fw, 13, BOOL(True))  # CaptureConfig
     assert fw.MaaGlobalLoadPlugin(os.fsencode(plugin_path))
     direct = {"recognition": "DirectHit", "action": "DoNothing", "pre_delay": 0, "post_delay": 0}
@@ -82,8 +83,17 @@ def flow_case(libs, root, output, plugin_path):
     resource = load_resource(fw, root, pipeline)
     tasker = fw.MaaTaskerCreate()
     assert tasker
-    errors, children = [], []
+    errors, children, helpers = [], [], {}
     override = bind(fw, "MaaContextOverridePipeline", BOOL, VOID, C.c_char_p)
+    run_recognition = bind(fw, "MaaContextRunRecognition", I64, VOID, C.c_char_p, C.c_char_p, VOID)
+    run_action = bind(fw, "MaaContextRunAction", I64, VOID, C.c_char_p, C.c_char_p, VOID, C.c_char_p)
+    image_path = root / "helper.png"
+    write_png(image_path)
+    encoded = image_path.read_bytes()
+    memory = C.create_string_buffer(encoded)
+    helper_image = fw.MaaImageBufferCreate()
+    assert helper_image and fw.MaaImageBufferSetEncoded(helper_image, memory, len(encoded))
+    helper_box = (C.c_int32 * 4)(0, 0, 2, 2)
 
     @CUSTOM_ACTION
     def nested(ctx, _task, _node, _custom, _param, _reco, _box, _arg):
@@ -93,7 +103,9 @@ def flow_case(libs, root, output, plugin_path):
             assert override(ctx, b'{"Outer":{"post_delay":17}}')
             child = fw.MaaContextRunTask(ctx, b"Child", b"{}")
             children.append(str(child))
-            return bool(child)
+            helpers["reco_id"] = run_recognition(ctx, b"Child", b"{}", helper_image)
+            helpers["action_id"] = run_action(ctx, b"Child", b"{}", helper_box, b"{}")
+            return bool(child) and all(value > 0 for value in helpers.values())
         except BaseException as exc:
             errors.append(repr(exc))
             return False
@@ -123,6 +135,25 @@ def flow_case(libs, root, output, plugin_path):
         assert subtask["data"]["flow"]["parent_source"] == "native_event"
         child_node = next(event for event in events if event["type"] == "node.started" and event["task_id"] == children[0])
         assert child_node["parent_span_id"] == subtask["span_id"]
+
+        for kind, result_key, operation_kind in (("recognition_node", "reco_id", "recognition"),
+                                                  ("action_node", "action_id", "action")):
+            helper = next(event for event in events if event["type"] == kind + ".started")
+            detail = native(helper)
+            helper_task = f'{helper["run_id"]}:task:{detail["task_id"]}'
+            assert helper["span_id"] == f'{helper["run_id"]}:node:{detail["node_id"]}'
+            assert helper["parent_span_id"] == helper_task
+            assert detail["parent"] == {"kind": "task", "id": detail["task_id"]}
+            assert helper["data"]["flow"]["task_parent_span_id"] == outer["span_id"]
+            assert helper["data"]["flow"]["parent_source"] == "native_event"
+            assert not any(event["span_id"] == helper_task and event["type"].endswith(".started") for event in events), \
+                "recognition/action helpers do not send Context.Task starts"
+            helper_end = next(event for event in events if event["type"] == kind + ".finished" and event["span_id"] == helper["span_id"])
+            assert helper_end["parent_span_id"] == helper_task
+            assert helper_end["data"]["flow"]["task_parent_span_id"] == outer["span_id"]
+            result = next(event for event in events if event["type"] == operation_kind + ".finished"
+                          and native(event).get(result_key) == helpers[result_key])
+            assert result["parent_span_id"] == helper["span_id"], "canonical helper node identity must match the operation's native parent"
 
         decisions = [event for event in events if event["type"] == "decision.finished"]
         assert decisions
@@ -165,6 +196,7 @@ def flow_case(libs, root, output, plugin_path):
         assert not bind(fw, "MaaGlobalShutdownPlugins", BOOL)(), "shutdown must refuse live objects"
         assert libs.status()["state"] == "recording"
     finally:
+        fw.MaaImageBufferDestroy(helper_image)
         fw.MaaTaskerDestroy(tasker)
         fw.MaaResourceDestroy(resource)
         close_framework(libs)
