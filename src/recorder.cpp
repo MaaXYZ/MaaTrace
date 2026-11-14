@@ -140,7 +140,8 @@ public:
             {"state", "recording"}, {"events", "events.jsonl"},
             {"capabilities", {{"native_events", true}, {"detail_snapshots", true},
                 {"screenshots", true}, {"config_snapshots", true}, {"observed_flow_links", true}, {"explicit_transitions", false},
-                {"complete_call_tree", false}, {"stop_reason", false}}},
+                {"complete_call_tree", false}, {"stop_reason", false},
+                {"native_parent_links", false}, {"runtime_config_snapshots", false}}},
             {"limits", {{"queue_capacity", capacity_}, {"queue_bytes", queue_limit_}, {"max_file_bytes", max_file_},
                 {"artifact_bytes", artifact_limit_}, {"config_bytes", config_limit_}}},
             {"capture", {{"images", env("MAA_TRACE_IMAGES", "none")}}},
@@ -252,7 +253,7 @@ private:
         if (dot != std::string::npos) status = item.message.substr(dot + 1);
         // Keep lookup data alive while the writer drains from the exit hook.
         static const auto* kinds = new std::map<std::string, std::string>{
-            {"Tasker.Task", "task"}, {"Node.PipelineNode", "node"},
+            {"Tasker.Task", "task"}, {"Context.Task", "subtask"}, {"Node.PipelineNode", "node"},
             {"Node.RecognitionNode", "recognition_node"}, {"Node.ActionNode", "action_node"},
             {"Node.Recognition", "recognition"}, {"Node.Action", "action"},
             {"Node.NextList", "decision"}, {"Node.WaitFreezes", "wait"},
@@ -260,11 +261,14 @@ private:
         };
         auto found = kinds->find(prefix);
         if (found != kinds->end()) kind = found->second;
+        const bool node_cancelled = found != kinds->end() && (prefix.rfind("Node.", 0) == 0 || prefix == "Context.Task")
+            && status == "Cancelled";
         std::string type = "framework.event";
         if (found != kinds->end()) {
             if (status == "Starting") type = kind + ".started";
-            if (status == "Succeeded" || status == "Failed") type = kind + ".finished";
+            if (status == "Succeeded" || status == "Failed" || node_cancelled) type = kind + ".finished";
         }
+        if (item.source == "context" && item.message == "Node.Transition") type = "node.transition";
         if (item.source == "custom") type = "custom.event";
         if (item.source == "host" && item.message == "Host.Stop.Requested") type = "stop.requested";
         if (!valid) type = "trace.invalid_event";
@@ -287,19 +291,37 @@ private:
                 }
             }
             data["native_ids"] = ids;
-            const char* id_key = kind == "task" ? "task_id" : kind == "recognition" ? "reco_id"
+            const char* id_key = kind == "task" || kind == "subtask" ? "task_id" : kind == "recognition" ? "reco_id"
                 : kind == "action" ? "action_id" : kind == "wait" ? "wf_id"
+                : kind == "decision" ? "list_id"
                 : (kind == "node" || kind == "recognition_node" || kind == "action_node") ? "node_id" : nullptr;
             if (id_key && !event["run_id"].is_null()) {
                 auto id = id_of(native, id_key);
-                if (!id.empty()) event["span_id"] = event["run_id"].get<std::string>() + ":" + kind + ":" + id;
+                auto span_kind = kind == "subtask" ? "task" : kind;
+                if (native.contains("context_id") && (kind == "recognition_node" || kind == "action_node")) span_kind = "node";
+                if (!id.empty() && id != "0" && id != "-1") event["span_id"] = event["run_id"].get<std::string>() + ":" + span_kind + ":" + id;
             }
-            if (status == "Succeeded" || status == "Failed") {
+            if (found != kinds->end() && (status == "Succeeded" || status == "Failed" || node_cancelled)) {
                 data["native_status"] = status;
+                // Legacy task status may report success for a cooperatively stopped task.
+                const bool cancelled = node_cancelled || (found != kinds->end()
+                    && native.contains("reason") && native["reason"] == "cancelled");
                 // Failed recognition can mean a miss or an execution error. Do not guess.
-                data["outcome"] = kind == "recognition"
+                data["outcome"] = cancelled ? "cancelled" : kind == "recognition"
                     ? (status == "Succeeded" ? "matched" : "unknown")
                     : (status == "Succeeded" ? "succeeded" : "failed");
+            }
+            if (item.source == "context" && (native.contains("parent") || native.contains("task_parent"))) {
+                manifest_["capabilities"]["native_parent_links"] = true;
+            }
+            if (type == "node.transition") manifest_["capabilities"]["explicit_transitions"] = true;
+            if (item.source == "context" && (kind == "recognition" || kind == "action")
+                && native.contains("pipeline") && native["pipeline"].is_object()) {
+                manifest_["capabilities"]["runtime_config_snapshots"] = true;
+            }
+            if ((item.source == "context" || (item.source == "tasker" && prefix == "Tasker.Task"))
+                && found != kinds->end() && native.value("reason", json()) == "cancelled") {
+                manifest_["capabilities"]["stop_reason"] = true;
             }
         } else {
             data["raw_details"] = item.details;

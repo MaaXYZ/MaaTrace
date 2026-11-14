@@ -101,7 +101,7 @@ def execute_case(args):
                 assert all(s["availability"] == "disabled" for s in statuses)
                 assert not artifacts
             elif args.case == "no_debug":
-                assert all(s["reason"] == "debug_required_or_not_retained" for s in statuses)
+                assert all(s["reason"] in ("debug_required_or_not_retained", "not_captured") for s in statuses)
                 assert not artifacts
             elif args.case == "image_limit":
                 assert all(s["reason"] == "image_size_limit" for s in statuses)

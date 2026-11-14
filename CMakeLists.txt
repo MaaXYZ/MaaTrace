@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(MaaTrace VERSION 0.1.0 LANGUAGES CXX)
+project(MaaTrace VERSION 0.2.0 LANGUAGES CXX)
 
 set(MAA_FRAMEWORK_ROOT "" CACHE PATH "Root of an extracted MaaFramework SDK")
 set(MAA_TRACE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version embedded in the plugin and package")
@@ -72,6 +72,10 @@ if(BUILD_TESTING)
     add_test(NAME host_api
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_host_api.py"
             --plugin "$<TARGET_FILE:MaaTrace>" --framework "$<TARGET_FILE:maa_framework_sdk>")
+    add_test(NAME native_runtime
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_runtime.py"
+            --plugin "$<TARGET_FILE:MaaTrace>" --framework "$<TARGET_FILE:maa_framework_sdk>")
+    set_tests_properties(native_runtime PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP native runtime")
     add_test(NAME drop_in_autoload
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autoload.py"
             --plugin "$<TARGET_FILE:MaaTrace>" --framework "$<TARGET_FILE:maa_framework_sdk>")

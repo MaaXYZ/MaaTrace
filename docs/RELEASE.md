@@ -18,7 +18,7 @@ cpack --config build/CPackConfig.cmake -C Release -B dist
 
 测试覆盖原生框架通知、候选未命中、嵌套任务、停止、异常 JSON、并发、输出故障、队列与文件预算、图片缓存、宿主事件、SHA256 和离线工具。测试数量会随版本变化，以 CTest 的实际结果为准。
 
-额外做一次实际安装验收：将插件放入一个完整 SDK/宿主的 `plugins` 目录，重新启动且不显式调用加载 API，运行一个包含识别和动作的任务。确认创建了 session，执行 `inspect`、`validate`、`export`，检查导出的图片与配置 SHA256。若启用图片，使用宿主显式 debug 模式，不要将事后截图当作识别输入。
+额外做一次实际安装验收：将插件放入一个完整 SDK/宿主的 `plugins` 目录，重新启动且不显式调用加载 API，运行一个包含识别和动作的任务。确认创建了 session，执行 `inspect`、`validate`、`export`，检查导出的图片与配置 SHA256。若启用图片，由宿主显式开启 debug 或新框架的 `RecoImageRaw`，不要将事后截图当作识别输入。包含 #1622 的框架还须验证原生调用关系、实际配置快照和统一插件收尾；已发布 v5.16.1 必须保持可加载。
 
 ## 提交、标签与 Actions
 
@@ -30,8 +30,8 @@ gh run list --workflow build.yml --branch main
 # 使用列表返回的运行 ID，等待目标提交的全部平台成功。
 gh run watch RUN_ID --exit-status
 
-git tag -a v0.1.0 -m "MaaTrace 0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "MaaTrace 0.2.0"
+git push origin v0.2.0
 gh run list --workflow build.yml
 gh run watch TAG_RUN_ID --exit-status
 ```
@@ -45,8 +45,8 @@ gh run watch TAG_RUN_ID --exit-status
 标签工作流成功后自动创建 Draft Release。下载其附件进行复核：
 
 ```sh
-gh release view v0.1.0
-gh release download v0.1.0 --dir release-check
+gh release view v0.2.0
+gh release download v0.2.0 --dir release-check
 ```
 
 对每份 ZIP 验证 `.zip.sha256` 中的 SHA256，并确认：
@@ -60,7 +60,7 @@ gh release download v0.1.0 --dir release-check
 确认草稿内容正确后发布：
 
 ```sh
-gh release edit v0.1.0 --draft=false
+gh release edit v0.2.0 --draft=false
 ```
 
 发布后若有问题，优先追加修复版本并保留原版本记录，不覆盖已经分发的相同版本二进制。源码本身是标准 CMake 项目，可由用户从标签复建。
@@ -69,6 +69,6 @@ gh release edit v0.1.0 --draft=false
 
 - **无法建仓或推送：** 检查组织权限和当前 GitHub 连接对目标仓库的授权。代码准备完成不能代表远端创建已经成功。
 - **框架没有发现插件：** 确认进程架构、库文件依赖、自动扫描目录和加载时机。标准 SDK 的框架与 MaaUtils 应在同一目录；分离布局需按实际 `library_dir()` 放置或显式加载。
-- **有事件但没有图片：** 检查图片策略、宿主 debug、缓存是否留存以及单图/总附件预算；以事件中的省略原因判断。
+- **有事件但没有图片：** 检查图片策略、宿主 debug / `RecoImageRaw`、缓存是否留存以及单图/总附件预算；以事件中的框架状态和省略原因判断。
 - **manifest 仍是 `recording`：** 可能是异常退出或没有显式关闭。先读取可用 JSONL，不要据此断言任务失败。
 - **报告缺口、截断或附件省略：** 检查预算、I/O 和记录器状态，保留这些诊断标记。增大预算只能影响后续运行，不能修复已丢失的事件。

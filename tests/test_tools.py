@@ -264,6 +264,178 @@ class ToolTests(unittest.TestCase):
         self.assertIn("Child", json.dumps(summary))
         self.assertEqual(summary["unclosed_spans"], 0)
 
+    def test_native_hierarchy_transitions_and_nested_result(self):
+        root = "run-1:task:1"
+        custom = "run-1:action:10"
+        nested = "run-1:task:2"
+        child = "run-1:action:20"
+        events = []
+
+        def operation(kind, span, task, name, parent=None, *, outcome=None, reason=None):
+            native = {"task_id": int(task), "entry" if kind.startswith(("task.", "subtask.")) else "name": name}
+            if reason:
+                native["reason"] = reason
+            value = event(len(events) + 1, kind, span=span, task=task, data={
+                "native_details": native, "flow": {"parent_source": "native_event"} if parent else {},
+            })
+            value["source"] = "context" if kind.startswith("subtask.") or task == "2" else "tasker"
+            value["parent_span_id"] = parent
+            if outcome:
+                value["data"]["outcome"] = outcome
+            events.append(value)
+
+        operation("task.started", root, "1", "Start")
+        operation("action.started", custom, "1", "Custom", root)
+        operation("subtask.started", nested, "2", "Nested", custom)
+        operation("action.started", child, "2", "Child", nested)
+        operation("action.finished", child, "2", "Child", nested, outcome="succeeded")
+        operation("subtask.finished", nested, "2", "Nested", custom, outcome="cancelled", reason="cancelled")
+        operation("action.finished", custom, "1", "Custom", root, outcome="succeeded")
+        for reason, source, target in (("next", "A", "B"), ("on_error", "B", "Recovery"),
+                                       ("jump_back", "Recovery", "A")):
+            events.append(event(len(events) + 1, "node.transition", data={"flow": {"transition": {
+                "from_span_id": "run-1:node:30", "to_span_id": "run-1:node:31",
+                "from_node_name": source, "to_node_name": target,
+                "reason": reason, "provenance": "observed", "evidence_seqs": [len(events) + 1],
+            }}}))
+        operation("task.finished", root, "1", "Start", outcome="succeeded", reason="completed")
+        self.write(events)
+        summary = self.call("inspect")
+        run = summary["runs"][0]
+        self.assertEqual((run["entry"], run["task_id"], run["outcome"], run["reason"]),
+                         ("Start", "1", "succeeded", "completed"))
+        self.assertEqual([item["node_name"] for item in run["route"]], ["Custom", "Child"])
+        tree = {item["span_id"]: item for item in run["hierarchy"]}
+        self.assertEqual(tree[nested]["kind"], "subtask")
+        self.assertEqual(tree[nested]["parent_span_id"], custom)
+        self.assertEqual(tree[nested]["parent_source"], "native_event")
+        self.assertEqual((tree[nested]["outcome"], tree[nested]["reason"]), ("cancelled", "cancelled"))
+        self.assertEqual(tree[child]["parent_span_id"], nested)
+        self.assertEqual([item["reason"] for item in run["transitions"]], ["next", "on_error", "jump_back"])
+        self.assertEqual(summary["termination_reasons"], {"cancelled": 1, "completed": 1})
+        self.assertEqual(summary["unclosed_spans"], 0)
+        text = self.call("inspect", json_output=False).stdout
+        self.assertIn("subtask Nested [cancelled; reason=cancelled", text)
+        self.assertIn("Transition: B → Recovery [on_error]", text)
+        self.assertIn("Transition: Recovery → A [jump_back; resumes successor list]", text)
+
+    def test_resource_diagnostics_without_task_are_summarized(self):
+        load = event(1, "resource.finished", task=None, run=None, data={
+            "native_message": "Resource.Loading.Failed", "native_status": "Failed", "outcome": "failed",
+            "native_ids": {"res_id": "9007199254740993"},
+            "native_details": {"res_id": 9007199254740993, "path": "resources/bundle", "type": "Bundle",
+                               "status": 4000, "errors": [{"code": "node_reference_not_found", "file": "pipeline/main.json",
+                                 "node": "A", "pointer": "/A/next", "field": "next", "target": "Missing"}]},
+        })
+        load["source"] = "resource"
+        self.write([load])
+        summary = self.call("inspect")
+        self.assertEqual(summary["runs"], [])
+        self.assertEqual((summary["resource_load_total"], summary["resource_failed_total"], summary["resource_error_total"]), (1, 1, 1))
+        diagnostic = summary["resource_loads"][0]
+        self.assertEqual(diagnostic["res_id"], "9007199254740993")
+        self.assertEqual(diagnostic["errors"][0]["pointer"], "/A/next")
+        self.assertTrue(summary["validation"]["valid"])
+        text = self.call("inspect", json_output=False).stdout
+        self.assertIn("Resource loads: 1; failed: 1; diagnostics: 1", text)
+        self.assertIn("node_reference_not_found: file=pipeline/main.json; node=A; pointer=/A/next", text)
+
+    def test_resource_diagnostic_samples_are_bounded_and_skip_malformed_values(self):
+        events = []
+        for seq in range(1, 206):
+            value = event(seq, "resource.finished", task=None, run=None, data={
+                "native_message": "Resource.Loading.Failed", "native_status": "Failed", "outcome": "failed",
+                "native_details": {"path": "x" * 1000, "type": ["malformed"], "errors": [None, "bad", *[
+                    {"code": "invalid_node", "file": "f" * 1000, "pointer": {"bad": "type"}} for _ in range(25)]]},
+            })
+            value["source"] = "resource"
+            events.append(value)
+        self.write(events)
+        summary = self.call("inspect")
+        self.assertEqual(summary["resource_load_total"], 205)
+        self.assertEqual(summary["resource_error_total"], 205 * 25)
+        self.assertEqual(len(summary["resource_loads"]), 200)
+        load = summary["resource_loads"][0]
+        self.assertEqual(len(load["errors"]), 20)
+        self.assertEqual(load["errors_total"], 25)
+        self.assertEqual(len(load["path"]), 257)
+        self.assertEqual(load["type"], None)
+        self.assertNotIn("pointer", load["errors"][0])
+        self.call("inspect", json_output=False)
+
+    def test_hierarchy_text_handles_cycles_and_unknown_parents(self):
+        events = []
+        for span, parent in (("a", "b"), ("b", "a"), ("c", "missing")):
+            for phase in ("started", "finished"):
+                value = event(len(events) + 1, "action." + phase, span=span,
+                              data={"native_details": {"name": span}, "flow": {"parent_source": "native_event"}})
+                value["parent_span_id"] = parent
+                events.append(value)
+        self.write(events)
+        text = self.call("inspect", json_output=False).stdout
+        self.assertIn("action a [unknown", text)
+        self.assertIn("action b [unknown", text)
+        self.assertIn("parent=missing (outside displayed tree)", text)
+
+    def test_hierarchy_uses_the_executed_pipeline_node_name(self):
+        start = event(1, "node.started", span="run-1:node:10", data={"native_details": {"name": "Source"}})
+        finish = event(2, "node.finished", span=start["span_id"], data={
+            "native_details": {"name": "Source", "node_details": {"name": "Selected"}}, "outcome": "succeeded",
+        })
+        self.write([start, finish])
+        operation = self.call("inspect")["runs"][0]["hierarchy"][0]
+        self.assertEqual(operation["name"], "Selected")
+
+    def test_helper_nodes_keep_native_parent_and_display_known_caller_without_task_start(self):
+        start, finish = task_events()
+        caller = "run-1:action:10"
+        events = [start]
+        for kind, span, name, parent, task_parent in (
+            ("action", caller, "Custom", start["span_id"], None),
+            ("recognition_node", "run-1:node:20", "ChildRecognition", "run-1:task:77", caller),
+            ("action_node", "run-1:node:30", "ChildAction", "run-1:task:88", caller),
+        ):
+            for phase in ("started", "finished"):
+                value = event(len(events) + 1, kind + "." + phase, span=span, data={
+                    "native_details": {"name": name},
+                    "flow": {"parent_source": "native_event", "task_parent_span_id": task_parent},
+                })
+                value["parent_span_id"] = parent
+                events.append(value)
+        finish.update(seq=len(events) + 1, elapsed_us=(len(events) + 1) * 100)
+        events.append(finish)
+        self.write(events)
+        run = self.call("inspect")["runs"][0]
+        self.assertEqual(run["hierarchy_start_total"], 4)
+        self.assertEqual(len(run["hierarchy"]), 4)
+        helper = next(item for item in run["hierarchy"] if item["kind"] == "recognition_node")
+        self.assertEqual(helper["parent_span_id"], "run-1:task:77")
+        self.assertEqual(helper["task_parent_span_id"], caller)
+        self.assertNotIn("run-1:task:77", {item["span_id"] for item in run["hierarchy"]})
+        text = self.call("inspect", json_output=False).stdout
+        recognition = next(line for line in text.splitlines() if "recognition_node ChildRecognition" in line)
+        self.assertTrue(recognition.startswith("        recognition_node"), recognition)
+        self.assertIn("via unobserved task run-1:task:77", recognition)
+        self.assertIn("via unobserved task run-1:task:88", text)
+
+    def test_hierarchy_samples_are_bounded_without_losing_route_totals(self):
+        start, finish = task_events()
+        events = [start]
+        for index in range(205):
+            for phase in ("started", "finished"):
+                value = event(len(events) + 1, "action." + phase, span=f"run-1:action:{index}",
+                              data={"native_details": {"name": f"Node{index}"}})
+                value["parent_span_id"] = start["span_id"]
+                events.append(value)
+        finish.update(seq=len(events) + 1, elapsed_us=(len(events) + 1) * 100)
+        events.append(finish)
+        self.write(events)
+        run = self.call("inspect")["runs"][0]
+        self.assertEqual(len(run["hierarchy"]), 200)
+        self.assertEqual(run["hierarchy_start_total"], 206)
+        self.assertEqual((len(run["route"]), run["route_total"]), (200, 205))
+        self.assertIn("... 6 more operation starts", self.call("inspect", json_output=False).stdout)
+
     def add_evidence(self):
         image = b"\x89PNG\r\n\x1a\nexample-evidence"
         config = b'{"name":"ClosePopup","recognition":"DirectHit"}\n'

@@ -56,6 +56,12 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value if len(value) <= 256 else value[:256] + "…"
+
+
 def _safe_path(root: Path, relative: Any) -> Path:
     """Accept portable relative regular-file references, never links or traversal."""
     if not isinstance(relative, str) or not relative or "\\" in relative or "\0" in relative:
@@ -173,7 +179,13 @@ class Analysis:
         self.manifest: dict[str, Any] | None = None
         self.types: Counter[str] = Counter()
         self.outcomes: Counter[str] = Counter()
+        self.termination_reasons: Counter[str] = Counter()
         self.runs: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.hierarchy_indexes: dict[str, dict[str, dict[str, Any]]] = {}
+        self.resource_loads: list[dict[str, Any]] = []
+        self.resource_load_total = 0
+        self.resource_failed_total = 0
+        self.resource_error_total = 0
         self.active: dict[str, dict[str, Any]] = {}
         self.finished: OrderedDict[str, None] = OrderedDict()
         self.lost_open_spans = 0
@@ -385,13 +397,85 @@ class Analysis:
             except (TraceError, OSError) as exc:
                 self.finding("error", "missing_artifact", str(exc), line)
 
+    def summarize_resource(self, event: dict[str, Any], native: dict[str, Any]) -> None:
+        self.resource_load_total += 1
+        data = event["data"]
+        failed = (data.get("outcome") == "failed" or data.get("native_status") == "Failed"
+                  or native.get("status") == 4000)
+        self.resource_failed_total += int(failed)
+        errors, samples, error_total = native.get("errors"), [], 0
+        if isinstance(errors, list):
+            for error in errors:
+                if not isinstance(error, dict):
+                    continue
+                error_total += 1
+                if len(samples) < 20:
+                    samples.append({key: label for key in ("code", "file", "node", "pointer", "field", "target")
+                                    if (label := _label(error.get(key))) is not None})
+        self.resource_error_total += error_total
+        if (failed or error_total) and len(self.resource_loads) < MAX_SAMPLES:
+            self.resource_loads.append({
+                "seq": event["seq"], "res_id": _label(_dict(data.get("native_ids")).get("res_id")),
+                "path": _label(native.get("path")), "type": _label(native.get("type")),
+                "outcome": "failed" if failed else _label(data.get("outcome")) or "unknown",
+                "errors_total": error_total, "errors": samples,
+            })
+
+    def summarize_hierarchy(self, event: dict[str, Any], run: dict[str, Any],
+                            native: dict[str, Any], flow: dict[str, Any]) -> None:
+        kind, phase = event["type"].rsplit(".", 1) if "." in event["type"] else ("", "")
+        if kind not in ("task", "subtask", "node", "recognition_node", "action_node", "decision",
+                        "recognition", "action", "wait") or phase not in ("started", "finished"):
+            return
+        if phase == "started":
+            run["hierarchy_start_total"] += 1
+        span = event["span_id"]
+        if not span or len(span) > 256:
+            return
+        index = self.hierarchy_indexes[event["run_id"]]
+        operation = index.get(span)
+        if operation is None:
+            if len(index) >= MAX_SAMPLES:
+                return
+            operation = {"span_id": span, "parent_span_id": _label(event["parent_span_id"]),
+                         "parent_source": _label(flow.get("parent_source")),
+                         "task_parent_span_id": _label(flow.get("task_parent_span_id")),
+                         "kind": kind, "task_id": _label(event["task_id"]),
+                         "name": _label(native.get("entry" if kind in ("task", "subtask") else "name")),
+                         "start_seq": None, "end_seq": None, "outcome": "unknown", "reason": None}
+            index[span] = operation
+            run["hierarchy"].append(operation)
+        if event["parent_span_id"] is not None:
+            operation["parent_span_id"] = _label(event["parent_span_id"])
+            operation["parent_source"] = _label(flow.get("parent_source"))
+        if flow.get("task_parent_span_id") is not None:
+            operation["task_parent_span_id"] = _label(flow.get("task_parent_span_id"))
+        operation["start_seq" if phase == "started" else "end_seq"] = event["seq"]
+        if phase == "finished":
+            operation["outcome"] = _label(event["data"].get("outcome")) or "unknown"
+            operation["reason"] = _label(native.get("reason"))
+            if kind in ("node", "recognition_node", "action_node"):
+                detail = _dict(native.get("node_details"))
+                if not detail:
+                    detail = _dict(_dict(_dict(event["data"].get("enrichment")).get("node")).get("value"))
+                executed = _label(flow.get("executed_node_name")) or _label(detail.get("name"))
+                if executed:
+                    operation["name"] = executed
+
     def summarize(self, event: dict[str, Any], line: int) -> None:
         kind = event["type"]
         self.types[kind if kind in self.types or len(self.types) < 1000 else "<other>"] += 1
         data, run_id = event["data"], event["run_id"]
+        native, flow = _dict(data.get("native_details")), _dict(data.get("flow"))
         outcome = data.get("outcome")
         if isinstance(outcome, str):
             self.outcomes[outcome if outcome in self.outcomes or len(self.outcomes) < 1000 else "<other>"] += 1
+        reason = _label(native.get("reason"))
+        if kind.endswith(".finished") and reason:
+            self.termination_reasons[reason if reason in self.termination_reasons
+                                     or len(self.termination_reasons) < 1000 else "<other>"] += 1
+        if kind == "resource.finished":
+            self.summarize_resource(event, native)
         if run_id is None:
             return
         if run_id not in self.runs:
@@ -400,25 +484,28 @@ class Analysis:
                 return
             self.runs[run_id] = {"run_id": run_id, "entry": None, "task_id": None, "outcome": "unknown",
                                  "events": 0, "route": [], "route_total": 0, "decisions": [], "decision_total": 0,
-                                 "transitions": [], "transition_total": 0}
+                                 "transitions": [], "transition_total": 0, "reason": None,
+                                 "hierarchy": [], "hierarchy_start_total": 0}
+            self.hierarchy_indexes[run_id] = {}
         run = self.runs[run_id]
         run["events"] += 1
-        native, flow = _dict(data.get("native_details")), _dict(data.get("flow"))
         if kind == "task.started":
-            run["entry"], run["task_id"] = native.get("entry"), event["task_id"]
+            run["entry"], run["task_id"] = _label(native.get("entry")), event["task_id"]
         elif kind == "task.finished":
             run["outcome"] = outcome if isinstance(outcome, str) else "unknown"
+            run["reason"] = reason
+        self.summarize_hierarchy(event, run, native, flow)
         if kind == "action.started":
             run["route_total"] += 1
             if len(run["route"]) < MAX_SAMPLES:
-                run["route"].append({"seq": event["seq"], "node_name": native.get("name"),
+                run["route"].append({"seq": event["seq"], "node_name": _label(native.get("name")),
                                      "task_id": event["task_id"], "span_id": event["span_id"],
                                      "source": "action.started"})
         if kind == "decision.finished":
             run["decision_total"] += 1
             if len(run["decisions"]) < MAX_SAMPLES:
                 run["decisions"].append({"seq": event["seq"], "span_id": event["span_id"],
-                                        "outcome": outcome, "source_node": native.get("name"),
+                                        "outcome": outcome, "reason": reason, "source_node": _label(native.get("name")),
                                         "candidates": _compact(flow.get("candidates", native.get("list"))),
                                         "flow": _compact(flow)})
         if isinstance(flow.get("transition"), dict):
@@ -475,6 +562,9 @@ class Analysis:
     def summary(self) -> dict[str, Any]:
         return {"session_id": self.report["session_id"], "event_count": self.report["event_count"],
                 "event_types": dict(self.types), "outcomes": dict(self.outcomes), "runs": list(self.runs.values()),
+                "termination_reasons": dict(self.termination_reasons), "resource_loads": self.resource_loads,
+                "resource_load_total": self.resource_load_total, "resource_failed_total": self.resource_failed_total,
+                "resource_error_total": self.resource_error_total,
                 "gap_count": self.gap_count, "gaps": self.gaps,
                 "unclosed_spans": self.report["unclosed_spans"],
                 "unclosed_span_samples": list(self.active.values())[:MAX_SAMPLES],
@@ -594,21 +684,89 @@ def _print_validation(report: dict[str, Any]) -> None:
             print(f"  ... {count - 20} more {severity}; use --json for details (up to {MAX_FINDINGS})")
 
 
+def _print_hierarchy(run: dict[str, Any]) -> None:
+    operations = run["hierarchy"]
+    if not operations:
+        return
+    print("  Execution hierarchy (sampled operations):")
+    indexed = {operation["span_id"]: operation for operation in operations}
+    children: dict[str | None, list[dict[str, Any]]] = {}
+    display_parents = {}
+    for operation in operations:
+        parent = operation["parent_span_id"]
+        task_parent = operation["task_parent_span_id"]
+        display_parent = parent if parent in indexed else None
+        if (display_parent is None and parent and parent.startswith(run["run_id"] + ":task:")
+                and task_parent in indexed):
+            display_parent = task_parent
+        display_parents[operation["span_id"]] = display_parent
+        children.setdefault(display_parent, []).append(operation)
+    visited = set()
+    roots = children.get(None, []) + operations
+    for root in roots:
+        pending = [(root, 0)]
+        while pending:
+            operation, depth = pending.pop()
+            span = operation["span_id"]
+            if span in visited:
+                continue
+            visited.add(span)
+            reason = f"; reason={operation['reason']}" if operation["reason"] else ""
+            parent = operation["parent_span_id"]
+            association = f"; parent_source={operation['parent_source']}" if operation["parent_source"] else ""
+            if (parent and display_parents[span] is not None
+                    and display_parents[span] == operation["task_parent_span_id"] and parent not in indexed):
+                association += f"; via unobserved task {parent}"
+            elif parent and (parent not in indexed or depth == 0):
+                association += f"; parent={parent} (outside displayed tree)"
+            indent = "  " * min(depth, 12) + ("… " if depth > 12 else "")
+            print(f"    {indent}{operation['kind']} {operation['name'] or '?'} [{operation['outcome']}{reason}{association}]")
+            pending.extend((child, depth + 1) for child in reversed(children.get(span, [])))
+    omitted = run["hierarchy_start_total"] - sum(item["start_seq"] is not None for item in operations)
+    if omitted > 0:
+        print(f"    ... {omitted} more operation starts")
+
+
+def _print_resource_summary(summary: dict[str, Any]) -> None:
+    if not summary["resource_load_total"]:
+        return
+    print(f"Resource loads: {summary['resource_load_total']}; failed: {summary['resource_failed_total']}; diagnostics: {summary['resource_error_total']}")
+    for load in summary["resource_loads"][:10]:
+        print(f"  seq {load['seq']}: {load['path'] or '(path not provided)'} [{load['outcome']}]")
+        for error in load["errors"]:
+            location = "; ".join(f"{key}={error[key]}" for key in ("file", "node", "pointer", "field", "target") if key in error)
+            print(f"    {error.get('code') or 'unknown'}" + (f": {location}" if location else ""))
+        if load["errors_total"] > len(load["errors"]):
+            print(f"    ... {load['errors_total'] - len(load['errors'])} more diagnostics")
+    if summary["resource_failed_total"] > min(10, len(summary["resource_loads"])):
+        print("  ... more failed loads; use --json for bounded diagnostic samples")
+
+
 def _print_summary(summary: dict[str, Any]) -> None:
     print(f"Session: {summary['session_id'] or 'unknown'}")
     print(f"Events: {summary['event_count']}; runs: {len(summary['runs'])}; artifacts: {summary['artifact_count']}")
+    _print_resource_summary(summary)
+    if summary["termination_reasons"]:
+        reasons = ", ".join(f"{reason}={count}" for reason, count in list(summary["termination_reasons"].items())[:20])
+        print("Termination reasons: " + reasons)
     for run in summary["runs"]:
-        print(f"\n{run['run_id']}: {run['entry'] or '(entry not observed)'} [{run['outcome']}]")
+        reason = f"; reason={run['reason']}" if run["reason"] else ""
+        print(f"\n{run['run_id']}: {run['entry'] or '(entry not observed)'} [{run['outcome']}{reason}]")
         route = " → ".join(str(entry["node_name"] or "?") for entry in run["route"])
         if route:
             print("  Observed action route: " + route)
             if run["route_total"] > len(run["route"]):
                 print(f"  ... {run['route_total'] - len(run['route'])} more action entries")
         print(f"  Decisions: {run['decision_total']}; observed/inferred transitions: {run['transition_total']}")
+        _print_hierarchy(run)
         for decision in run["decisions"][:10]:
             flow = _dict(decision["flow"])
             selected = flow.get("selected_candidate_index")
             print(f"    seq {decision['seq']}: {decision['source_node'] or '?'} → candidate {selected if selected is not None else '?'} [{decision['outcome'] or 'unknown'}]")
+        for transition in run["transitions"][:10]:
+            reason = transition.get("reason")
+            resumed = "; resumes successor list" if reason == "jump_back" else ""
+            print(f"    Transition: {transition.get('from_node_name') or '?'} → {transition.get('to_node_name') or '?'} [{reason or 'unknown'}{resumed}]")
     print()
     _print_validation(summary["validation"])
 

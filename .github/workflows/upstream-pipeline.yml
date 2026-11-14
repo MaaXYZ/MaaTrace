@@ -10,8 +10,7 @@ on:
       - 'include/**'
       - 'third_party/**'
       - 'tools/**'
-      - 'tests/test_pipeline_trace.py'
-      - 'tests/test_upstream_ci.py'
+      - 'tests/**'
   pull_request:
     paths:
       - '.github/workflows/upstream-pipeline.yml'
@@ -20,12 +19,11 @@ on:
       - 'include/**'
       - 'third_party/**'
       - 'tools/**'
-      - 'tests/test_pipeline_trace.py'
-      - 'tests/test_upstream_ci.py'
+      - 'tests/**'
   workflow_dispatch:
     inputs:
       upstream_run_id:
-        description: 'Successful MaaFramework main test run at/after v5.16.1; blank selects the latest compatible run with full artifacts'
+        description: 'Successful MaaFramework main test run containing #1622; blank selects the latest compatible run with full artifacts'
         required: false
         type: string
 
@@ -97,9 +95,21 @@ jobs:
         shell: bash
         run: |
           cmake -S . -B build-upstream -DMAA_FRAMEWORK_ROOT="$PWD/upstream" \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           cmake --build build-upstream --config Release --parallel 2
           cmake --install build-upstream --config Release --prefix plugin-install
+      - name: Test native runtime observation and released API compatibility
+        shell: bash
+        run: |
+          ctest --test-dir build-upstream -C Release --output-on-failure
+          python - <<'PY'
+          import pathlib, subprocess, sys
+          suffix = '.dll' if sys.platform == 'win32' else '.dylib' if sys.platform == 'darwin' else '.so'
+          plugin, = pathlib.Path('plugin-install/plugins').glob('*' + suffix)
+          framework, = pathlib.Path('upstream/bin').glob('*MaaFramework' + suffix)
+          subprocess.run([sys.executable, 'tests/test_native_runtime.py', '--plugin', str(plugin),
+                          '--framework', str(framework), '--require-native'], check=True)
+          PY
       - name: Inject MaaTrace and run the official PipelineTesting executable
         id: pipeline
         shell: bash

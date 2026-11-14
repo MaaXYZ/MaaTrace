@@ -477,7 +477,7 @@
               "$ref": "#/$defs/nullableId"
             },
             "provenance": {
-              "const": "inferred"
+              "enum": ["observed", "inferred"]
             },
             "reason": {
               "type": "string"
