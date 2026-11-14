@@ -12,23 +12,29 @@ permissions:
 
 env:
   # Update the version and the three upstream checksums together.
-  MAA_SDK_VERSION: v5.16.1
+  MAA_SDK_VERSION: v6.0.0-alpha.1
 
 jobs:
   build:
+    name: ${{ matrix.platform }} (${{ matrix.sdk }})
     strategy:
       fail-fast: false
       matrix:
+        sdk: [current, legacy]
+        platform: [linux-x86_64, win-x86_64, macos-aarch64]
         include:
           - runner: ubuntu-22.04
             platform: linux-x86_64
-            sdk_sha256: 3b9fc1d979cf21dcb81768fdaf06a6e45aaa2c1058dd879d4b5417274fae919c
+            sdk_sha256: e913b48e9b750d79f9af97e7c814f86ca47cb5fcb8187a8ae82d7ed704465e0e
+            legacy_sdk_sha256: 3b9fc1d979cf21dcb81768fdaf06a6e45aaa2c1058dd879d4b5417274fae919c
           - runner: windows-2022
             platform: win-x86_64
-            sdk_sha256: 19588e6fda8d977496eb143cce157ce0c21890bee62aef8fdf1696930fe1286e
+            sdk_sha256: 4e0bf2d0c77eb623dece166b5e7a86be14b2875c1008d27b1ffe33c1ef2263fe
+            legacy_sdk_sha256: 19588e6fda8d977496eb143cce157ce0c21890bee62aef8fdf1696930fe1286e
           - runner: macos-15
             platform: macos-aarch64
-            sdk_sha256: fee7eef4ce9aace7a875be47e10ee1b3600d927f3d983e1d1a782aca20cbbd3d
+            sdk_sha256: ef458572b7e4746963d1a68a93806458b2a904989f5259926d84bb9272ab5e5a
+            legacy_sdk_sha256: fee7eef4ce9aace7a875be47e10ee1b3600d927f3d983e1d1a782aca20cbbd3d
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +44,9 @@ jobs:
       - name: Download pinned MaaFramework SDK
         shell: bash
         env:
+          MAA_SDK_VERSION: ${{ matrix.sdk == 'legacy' && 'v5.16.1' || env.MAA_SDK_VERSION }}
           SDK_PLATFORM: ${{ matrix.platform }}
-          SDK_SHA256: ${{ matrix.sdk_sha256 }}
+          SDK_SHA256: ${{ matrix.sdk == 'legacy' && matrix.legacy_sdk_sha256 || matrix.sdk_sha256 }}
         run: |
           python - <<'PY'
           import hashlib, os, pathlib, urllib.request, zipfile
@@ -68,7 +75,21 @@ jobs:
         run: cmake --build build --config Release --parallel 2
       - name: Test against the SDK
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Require native observation from the released alpha SDK
+        if: matrix.sdk == 'current'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, subprocess, sys
+          suffix = '.dll' if sys.platform == 'win32' else '.dylib' if sys.platform == 'darwin' else '.so'
+          plugin, = pathlib.Path('build/bin').rglob('*MaaTrace' + suffix)
+          framework, = pathlib.Path('deps/bin').glob('*MaaFramework' + suffix)
+          subprocess.run([sys.executable, 'tests/test_native_runtime.py', '--plugin', str(plugin),
+                          '--framework', str(framework), '--require-native',
+                          '--expected-framework-version', os.environ['MAA_SDK_VERSION']], check=True)
+          PY
       - name: Package
+        if: matrix.sdk == 'current'
         shell: bash
         run: |
           cpack --config build/CPackConfig.cmake -C Release -B dist
@@ -79,6 +100,7 @@ jobs:
                   f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n', encoding='utf-8')
           PY
       - name: Test the packaged plugin
+        if: matrix.sdk == 'current'
         shell: bash
         run: |
           python - <<'PY'
@@ -92,7 +114,32 @@ jobs:
           subprocess.run([sys.executable, 'tests/test_autoload.py', '--plugin', str(plugin),
                           '--framework', str(framework)], check=True)
           PY
+      - name: Verify the alpha-built package in a v5.16.1 host
+        if: matrix.sdk == 'current'
+        shell: bash
+        env:
+          SDK_PLATFORM: ${{ matrix.platform }}
+          SDK_SHA256: ${{ matrix.legacy_sdk_sha256 }}
+        run: |
+          python - <<'PY'
+          import hashlib, os, pathlib, subprocess, sys, urllib.request, zipfile
+          version = 'v5.16.1'
+          name = f"MAA-{os.environ['SDK_PLATFORM']}-{version}.zip"
+          archive = pathlib.Path('legacy-sdk.zip')
+          urllib.request.urlretrieve(f'https://github.com/MaaXYZ/MaaFramework/releases/download/{version}/{name}', archive)
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          assert actual == os.environ['SDK_SHA256'], f'Legacy SDK checksum mismatch: {actual}'
+          with zipfile.ZipFile(archive) as z:
+              z.extractall('legacy-sdk')
+          archive.unlink()
+          suffix = '.dll' if sys.platform == 'win32' else '.dylib' if sys.platform == 'darwin' else '.so'
+          plugin, = pathlib.Path('packaged/plugins').glob('*' + suffix)
+          framework, = pathlib.Path('legacy-sdk/bin').glob('*MaaFramework' + suffix)
+          subprocess.run([sys.executable, 'tests/test_autoload.py', '--plugin', str(plugin),
+                          '--framework', str(framework)], check=True)
+          PY
       - uses: actions/upload-artifact@v4
+        if: matrix.sdk == 'current'
         with:
           name: MaaTrace-${{ matrix.platform }}
           path: |

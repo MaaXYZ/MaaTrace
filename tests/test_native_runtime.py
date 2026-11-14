@@ -263,6 +263,10 @@ def execute(args):
                           MAA_TRACE_MAX_FILE_BYTES="134217728", MAA_TRACE_MAX_CONFIG_BYTES="16777216",
                           MAA_TRACE_MAX_IMAGE_BYTES="8388608", MAA_TRACE_MAX_ARTIFACT_BYTES="268435456")
         libs = Libraries(args.plugin, args.framework)
+        if args.expected_framework_version:
+            actual_version = bind(libs.fw, "MaaVersion", C.c_char_p)().decode("utf-8")
+            if actual_version.removeprefix("v") != args.expected_framework_version.removeprefix("v"):
+                raise SystemExit(f"SDK version mismatch: expected {args.expected_framework_version}, got {actual_version}")
         if not recent_sdk(libs.fw):
             if args.require_native:
                 raise SystemExit("SDK does not provide the required native runtime observation APIs")
@@ -284,6 +288,7 @@ def main():
     parser.add_argument("--framework", type=Path, required=True)
     parser.add_argument("--case", choices=("flow", "raw", "not_captured", "budget_exceeded"))
     parser.add_argument("--require-native", action="store_true", help="fail instead of skipping on an older SDK")
+    parser.add_argument("--expected-framework-version", help="require this exact released SDK version (optional v prefix)")
     args = parser.parse_args()
     args.plugin, args.framework = args.plugin.resolve(), args.framework.resolve()
     if args.case:
@@ -294,6 +299,8 @@ def main():
                    "--framework", str(args.framework), "--case", case]
         if args.require_native:
             command.append("--require-native")
+        if args.expected_framework_version:
+            command.extend(("--expected-framework-version", args.expected_framework_version))
         result = subprocess.run(command,
                                 capture_output=True, text=True, timeout=90)
         if result.returncode:

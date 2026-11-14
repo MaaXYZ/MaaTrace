@@ -5,7 +5,7 @@
 ## 发布前验证
 
 1. 更新 `CMakeLists.txt` 项目版本、`CHANGELOG.md` 和必要的协议文档。改变现有字段语义时升级 schema 主版本。
-2. 若升级 SDK，同时更新工作流的固定版本和三个平台的 SHA256，禁止只更改版本号。
+2. 若升级 SDK，同时更新工作流的固定版本和三个平台的 SHA256，禁止只更改版本号。下载后的内容还应与 GitHub Release 的 digest 一致。主构建必须通过精确版本检查和 `--require-native` 验收；v5.16.1 兼容矩阵可跳过缺少接口的原生测试。
 3. 在匹配平台的 SDK 上配置、构建、测试；检查安装目录和 ZIP 内的路径。
 
 ```sh
@@ -30,13 +30,13 @@ gh run list --workflow build.yml --branch main
 # 使用列表返回的运行 ID，等待目标提交的全部平台成功。
 gh run watch RUN_ID --exit-status
 
-git tag -a v0.2.0 -m "MaaTrace 0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "MaaTrace 0.2.1"
+git push origin v0.2.1
 gh run list --workflow build.yml
 gh run watch TAG_RUN_ID --exit-status
 ```
 
-工作流当前配置 Windows x64、Linux x64、macOS ARM64，固定 MaaFramework `v5.16.1`，宿主最低版本同为 `v5.16.1`。标签构建的版本取自标签去掉前缀 `v` 的值。普通分支也提供 Actions artifacts，方便在创建正式版本前验收。
+工作流当前配置 Windows x64、Linux x64、macOS ARM64，发行包使用固定 MaaFramework `v6.0.0-alpha.1` SDK；三个平台还单独验证 `v5.16.1` 兼容性，宿主最低版本仍为 `v5.16.1`。只有 alpha SDK 的主构建产生发行包，兼容矩阵不重复打包或上传同名附件；主构建的实际发行插件还需在 v5.16.1 宿主中通过自动加载和记录导出验收。标签构建的版本取自标签去掉前缀 `v` 的值。普通分支也提供 Actions artifacts，方便在创建正式版本前验收。
 
 不得把某一平台本地成功等同于其他平台已通过。目标提交和标签必须以各自的 Actions 结果为准。
 
@@ -45,8 +45,8 @@ gh run watch TAG_RUN_ID --exit-status
 标签工作流成功后自动创建 Draft Release。下载其附件进行复核：
 
 ```sh
-gh release view v0.2.0
-gh release download v0.2.0 --dir release-check
+gh release view v0.2.1
+gh release download v0.2.1 --dir release-check
 ```
 
 对每份 ZIP 验证 `.zip.sha256` 中的 SHA256，并确认：
@@ -60,7 +60,7 @@ gh release download v0.2.0 --dir release-check
 确认草稿内容正确后发布：
 
 ```sh
-gh release edit v0.2.0 --draft=false
+gh release edit v0.2.1 --draft=false
 ```
 
 发布后若有问题，优先追加修复版本并保留原版本记录，不覆盖已经分发的相同版本二进制。源码本身是标准 CMake 项目，可由用户从标签复建。

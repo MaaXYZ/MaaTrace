@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(MaaTrace VERSION 0.2.0 LANGUAGES CXX)
+project(MaaTrace VERSION 0.2.1 LANGUAGES CXX)
 
 set(MAA_FRAMEWORK_ROOT "" CACHE PATH "Root of an extracted MaaFramework SDK")
 set(MAA_TRACE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Version embedded in the plugin and package")

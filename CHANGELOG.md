@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- 以 MaaFramework v6.0.0-alpha.1 的正式发行 SDK 构建、验证和打包，固定三个平台的 SHA256；同步保留 v5.16.1 的三平台兼容回归，并验证 alpha SDK 构建的发行插件可在旧宿主自动加载。
+- alpha SDK 必须提供原生观测接口，且 `MaaVersion()` 必须与固定版本一致；新增能力不再仅依靠上游 Debug 产物验收。
+- 上游完整 PipelineTesting 仍单独运行，最低源代码基线使用 v6.0.0-alpha.1 标签。
+
 ## 0.2.0
 
 - 使用框架原生父操作、嵌套任务、候选扫描 ID、轮次及选中项关联执行过程；原生节点流转保留 `entry`、`next`、`on_error` 和 `jump_back` 原因。旧宿主继续使用带来源标记的推断。
